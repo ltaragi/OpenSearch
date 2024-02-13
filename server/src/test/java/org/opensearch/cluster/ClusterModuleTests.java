@@ -51,6 +51,7 @@ import org.opensearch.cluster.routing.allocation.decider.MaxRetryAllocationDecid
 import org.opensearch.cluster.routing.allocation.decider.NodeLoadAwareAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeVersionAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.RebalanceOnlyWhenActiveAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.RemoteStoreAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ReplicaAfterPrimaryActiveAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ResizeAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.RestoreInProgressAllocationDecider;
@@ -240,7 +241,8 @@ public class ClusterModuleTests extends ModuleTestCase {
             ShardsLimitAllocationDecider.class,
             AwarenessAllocationDecider.class,
             NodeLoadAwareAllocationDecider.class,
-            TargetPoolAllocationDecider.class
+            TargetPoolAllocationDecider.class,
+            RemoteStoreAllocationDecider.class
         );
         Collection<AllocationDecider> deciders = ClusterModule.createAllocationDeciders(
             Settings.EMPTY,

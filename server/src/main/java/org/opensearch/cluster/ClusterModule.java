@@ -67,6 +67,7 @@ import org.opensearch.cluster.routing.allocation.decider.FilterAllocationDecider
 import org.opensearch.cluster.routing.allocation.decider.MaxRetryAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeLoadAwareAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.NodeVersionAllocationDecider;
+import org.opensearch.cluster.routing.allocation.decider.RemoteStoreAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.RebalanceOnlyWhenActiveAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ReplicaAfterPrimaryActiveAllocationDecider;
 import org.opensearch.cluster.routing.allocation.decider.ResizeAllocationDecider;
@@ -370,6 +371,7 @@ public class ClusterModule extends AbstractModule {
         addAllocationDecider(deciders, new AwarenessAllocationDecider(settings, clusterSettings));
         addAllocationDecider(deciders, new NodeLoadAwareAllocationDecider(settings, clusterSettings));
         addAllocationDecider(deciders, new TargetPoolAllocationDecider());
+        addAllocationDecider(deciders, new RemoteStoreAllocationDecider(settings, clusterSettings));
 
         clusterPlugins.stream()
             .flatMap(p -> p.createAllocationDeciders(settings, clusterSettings).stream())
