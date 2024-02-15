@@ -125,10 +125,10 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         ShardRouting primaryShardRouting = clusterState.getRoutingTable().shardRoutingTable(TEST_INDEX, 0).primaryShard();
         RoutingNode nonRemoteRoutingNode = clusterState.getRoutingNodes().node(nonRemoteNode.getId());
 
-        RemoteStoreAllocationDecider remoteStoreClusterAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
+        RemoteStoreAllocationDecider remoteStoreAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
 
         RoutingAllocation routingAllocation = new RoutingAllocation(
-            new AllocationDeciders(Collections.singleton(remoteStoreClusterAllocationDecider)),
+            new AllocationDeciders(Collections.singleton(remoteStoreAllocationDecider)),
             clusterState.getRoutingNodes(),
             clusterState,
             null,
@@ -137,7 +137,7 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         );
         routingAllocation.debugDecision(true);
 
-        Decision decision = remoteStoreClusterAllocationDecider.canAllocate(primaryShardRouting, nonRemoteRoutingNode, routingAllocation);
+        Decision decision = remoteStoreAllocationDecider.canAllocate(primaryShardRouting, nonRemoteRoutingNode, routingAllocation);
         assertThat(decision.type(), is(Decision.Type.NO));
         assertThat(decision.getExplanation(), is("for REMOTE_STORE direction, new primary shards can not be allocated to non-remote nodes"));
     }
@@ -161,10 +161,10 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         ShardRouting primaryShardRouting = clusterState.getRoutingTable().shardRoutingTable(TEST_INDEX, 0).primaryShard();
         RoutingNode remoteRoutingNode = clusterState.getRoutingNodes().node(remoteNode.getId());
 
-        RemoteStoreAllocationDecider remoteStoreClusterAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
+        RemoteStoreAllocationDecider remoteStoreAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
 
         RoutingAllocation routingAllocation = new RoutingAllocation(
-            new AllocationDeciders(Collections.singleton(remoteStoreClusterAllocationDecider)),
+            new AllocationDeciders(Collections.singleton(remoteStoreAllocationDecider)),
             clusterState.getRoutingNodes(),
             clusterState,
             null,
@@ -173,7 +173,7 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         );
         routingAllocation.debugDecision(true);
 
-        Decision decision = remoteStoreClusterAllocationDecider.canAllocate(primaryShardRouting, remoteRoutingNode, routingAllocation);
+        Decision decision = remoteStoreAllocationDecider.canAllocate(primaryShardRouting, remoteRoutingNode, routingAllocation);
         assertThat(decision.type(), is(Decision.Type.YES));
         assertThat(decision.getExplanation(), is("for REMOTE_STORE direction, allocation of a primary shard is allowed on a remote_store_enabled node"));
     }
@@ -245,10 +245,10 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         ShardRouting replicaShardRouting = clusterState.getRoutingTable().shardRoutingTable(TEST_INDEX, 0).replicaShards().get(0);
         RoutingNode remoteRoutingNode = clusterState.getRoutingNodes().node(remoteNode.getId());
 
-        RemoteStoreAllocationDecider remoteStoreClusterAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
+        RemoteStoreAllocationDecider remoteStoreAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
 
         RoutingAllocation routingAllocation = new RoutingAllocation(
-            new AllocationDeciders(Collections.singleton(remoteStoreClusterAllocationDecider)),
+            new AllocationDeciders(Collections.singleton(remoteStoreAllocationDecider)),
             clusterState.getRoutingNodes(),
             clusterState,
             null,
@@ -257,7 +257,7 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         );
         routingAllocation.debugDecision(true);
 
-        Decision decision = remoteStoreClusterAllocationDecider.canAllocate(replicaShardRouting, remoteRoutingNode, routingAllocation);
+        Decision decision = remoteStoreAllocationDecider.canAllocate(replicaShardRouting, remoteRoutingNode, routingAllocation);
         assertThat(decision.type(), is(Decision.Type.NO));
         assertThat(decision.getExplanation(), is("can not allocate replica shard on a remote node when primary shard is not already active on some remote node"));
 
@@ -330,10 +330,10 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         ShardRouting replicaShardRouting = clusterState.getRoutingTable().shardRoutingTable(TEST_INDEX, 0).replicaShards().get(0);
         RoutingNode remoteRoutingNode = clusterState.getRoutingNodes().node(remoteNode2.getId());
 
-        RemoteStoreAllocationDecider remoteStoreClusterAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
+        RemoteStoreAllocationDecider remoteStoreAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
 
         RoutingAllocation routingAllocation = new RoutingAllocation(
-            new AllocationDeciders(Collections.singleton(remoteStoreClusterAllocationDecider)),
+            new AllocationDeciders(Collections.singleton(remoteStoreAllocationDecider)),
             clusterState.getRoutingNodes(),
             clusterState,
             null,
@@ -342,12 +342,12 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         );
         routingAllocation.debugDecision(true);
 
-        Decision decision = remoteStoreClusterAllocationDecider.canAllocate(replicaShardRouting, remoteRoutingNode, routingAllocation);
+        Decision decision = remoteStoreAllocationDecider.canAllocate(replicaShardRouting, remoteRoutingNode, routingAllocation);
         assertThat(decision.type(), is(Decision.Type.YES));
         assertThat(decision.getExplanation(), is("for REMOTE_STORE direction, allocation of a replica shard is allowed on a remote_store_enabled node"));
     }
 
-    public void testAllocateNewReplicaShardOnNonRemoteNodeForRemoteStoreDirection () {
+    public void testAllocateNewReplicaShardOnNonRemoteNodeIfPrimaryShardOnNonRemoteNodeForRemoteStoreDirection () {
         FeatureFlags.initializeFeatureFlags(directionEnabledNodeSettings);
         ShardId shardId = new ShardId(TEST_INDEX, "_na_", 0);
 
@@ -414,10 +414,10 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         ShardRouting replicaShardRouting = clusterState.getRoutingTable().shardRoutingTable(TEST_INDEX, 0).replicaShards().get(0);
         RoutingNode nonRemoteRoutingNode = clusterState.getRoutingNodes().node(nonRemoteNode2.getId());
 
-        RemoteStoreAllocationDecider remoteStoreClusterAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
+        RemoteStoreAllocationDecider remoteStoreAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
 
         RoutingAllocation routingAllocation = new RoutingAllocation(
-            new AllocationDeciders(Collections.singleton(remoteStoreClusterAllocationDecider)),
+            new AllocationDeciders(Collections.singleton(remoteStoreAllocationDecider)),
             clusterState.getRoutingNodes(),
             clusterState,
             null,
@@ -426,7 +426,90 @@ public class RemoteStoreAllocationDeciderTests extends OpenSearchAllocationTestC
         );
         routingAllocation.debugDecision(true);
 
-        Decision decision = remoteStoreClusterAllocationDecider.canAllocate(replicaShardRouting, nonRemoteRoutingNode, routingAllocation);
+        Decision decision = remoteStoreAllocationDecider.canAllocate(replicaShardRouting, nonRemoteRoutingNode, routingAllocation);
+        assertThat(decision.type(), is(Decision.Type.YES));
+        assertThat(decision.getExplanation(), is("for REMOTE_STORE direction, allocation of a replica shard is allowed on a non_remote_store_enabled node"));
+    }
+
+    public void testAllocateNewReplicaShardOnNonRemoteNodeIfPrimaryShardOnRemoteNodeForRemoteStoreDirection () {
+        FeatureFlags.initializeFeatureFlags(directionEnabledNodeSettings);
+
+        ShardId shardId = new ShardId(TEST_INDEX, "_na_", 0);
+
+        DiscoveryNode nonRemoteNode = getNonRemoteNode();
+        assertFalse(nonRemoteNode.isRemoteStoreNode());
+        DiscoveryNode remoteNode = getRemoteNode();
+        assertTrue(remoteNode.isRemoteStoreNode());
+
+        Metadata metadata = Metadata.builder()
+            .put(
+                IndexMetadata.builder(shardId.getIndexName())
+                    .settings(settings(Version.CURRENT).put(remoteStoreDirectionSettings).put(directionEnabledNodeSettings))
+                    .numberOfShards(1)
+                    .numberOfReplicas(1)
+            )
+            .build();
+
+        RoutingTable routingTable = RoutingTable.builder()
+            .add(
+                IndexRoutingTable.builder(shardId.getIndex())
+                    .addIndexShard(
+                        new IndexShardRoutingTable.Builder(shardId).addShard(
+                                // primary shard on non-remote node
+                                TestShardRouting.newShardRouting(
+                                    shardId.getIndexName(),
+                                    shardId.getId(),
+                                    remoteNode.getId(),
+                                    true,
+                                    ShardRoutingState.STARTED
+                                )
+                            )
+                            .addShard(
+                                // new replica's allocation
+                                TestShardRouting.newShardRouting(
+                                    shardId.getIndexName(),
+                                    shardId.getId(),
+                                    null,
+                                    false,
+                                    ShardRoutingState.UNASSIGNED
+                                )
+                            )
+                            .build()
+                    )
+            )
+            .build();
+
+        DiscoveryNodes discoveryNodes = DiscoveryNodes.builder()
+            .add(nonRemoteNode)
+            .localNodeId(nonRemoteNode.getId())
+            .add(remoteNode)
+            .localNodeId(remoteNode.getId())
+            .build();
+
+        ClusterState clusterState = ClusterState.builder(ClusterName.DEFAULT)
+            .metadata(metadata)
+            .routingTable(routingTable)
+            .nodes(discoveryNodes)
+            .build();
+
+        assertEquals(2, clusterState.getRoutingTable().allShards().size());
+
+        ShardRouting replicaShardRouting = clusterState.getRoutingTable().shardRoutingTable(TEST_INDEX, 0).replicaShards().get(0);
+        RoutingNode nonRemoteRoutingNode = clusterState.getRoutingNodes().node(nonRemoteNode.getId());
+
+        RemoteStoreAllocationDecider remoteStoreAllocationDecider = new RemoteStoreAllocationDecider(remoteStoreDirectionSettings, remoteStoreDirectionClusterSettings);
+
+        RoutingAllocation routingAllocation = new RoutingAllocation(
+            new AllocationDeciders(Collections.singleton(remoteStoreAllocationDecider)),
+            clusterState.getRoutingNodes(),
+            clusterState,
+            null,
+            null,
+            0L
+        );
+        routingAllocation.debugDecision(true);
+
+        Decision decision = remoteStoreAllocationDecider.canAllocate(replicaShardRouting, nonRemoteRoutingNode, routingAllocation);
         assertThat(decision.type(), is(Decision.Type.YES));
         assertThat(decision.getExplanation(), is("for REMOTE_STORE direction, allocation of a replica shard is allowed on a non_remote_store_enabled node"));
     }
