@@ -32,6 +32,7 @@
 
 package org.opensearch.cluster.routing.allocation.decider;
 
+import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.routing.RoutingNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.allocation.RoutingAllocation;
@@ -48,6 +49,7 @@ import org.opensearch.cluster.node.DiscoveryNode;
  *      - New primary shards can only be allocated to a remote node
  *      - New replica shards can be allocated to a remote node iff the primary has been migrated/allocated to a remote node
  * - For STRICT compatibility mode, the migration direction has to be same as type of target node
+ * - For remote_store_enabled indices, relocation or allocation/relocation can only be towards a remote node
  *
  * @opensearch.internal
  */
@@ -57,10 +59,15 @@ public class RemoteStoreMigrationAllocationDecider extends AllocationDecider {
 
     private Direction migrationDirection;
     private CompatibilityMode compatibilityMode;
+    private boolean remoteStoreEnabledIndex = false;
 
     public RemoteStoreMigrationAllocationDecider(Settings settings, ClusterSettings clusterSettings) {
         this.migrationDirection = RemoteStoreNodeService.MIGRATION_DIRECTION_SETTING.get(settings);
         this.compatibilityMode = RemoteStoreNodeService.REMOTE_STORE_COMPATIBILITY_MODE_SETTING.get(settings);
+        this.remoteStoreEnabledIndex = IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.get(settings);
+        if (IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.exists(settings)) {
+            remoteStoreEnabledIndex = IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.get(settings);
+        }
         clusterSettings.addSettingsUpdateConsumer(
             RemoteStoreNodeService.MIGRATION_DIRECTION_SETTING,
             this::setMigrationDirection
@@ -85,6 +92,15 @@ public class RemoteStoreMigrationAllocationDecider extends AllocationDecider {
     public Decision canAllocate(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation) {
         DiscoveryNode targetNode = node.node();
         String reason = checkStrictModeNoDecisions(shardRouting, targetNode, allocation);
+        if (reason != null) {
+            return allocation.decision(Decision.NO, NAME, reason);
+        }
+
+        IndexMetadata indexMetadata = allocation.metadata().getIndexSafe(shardRouting.index());
+        if (IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.exists(indexMetadata.getSettings())) {
+            remoteStoreEnabledIndex = IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.get(indexMetadata.getSettings());
+        }
+        reason = checkIndexMetadataDecisions(shardRouting, targetNode, allocation);
         if (reason != null) {
             return allocation.decision(Decision.NO, NAME, reason);
         }
@@ -149,6 +165,26 @@ public class RemoteStoreMigrationAllocationDecider extends AllocationDecider {
             if (migrationDirection.equals(Direction.REMOTE_STORE) && !targetNode.isRemoteStoreNode()) {
                 return getReason(false, !shardRouting.assignedToNode(), shardRouting.primary(), targetNode,
                     " because target node cannot be non-remote in STRICT mode");
+            }
+        }
+        return null;
+    }
+
+    private String checkIndexMetadataDecisions (ShardRouting shardRouting, DiscoveryNode targetNode, RoutingAllocation allocation) {
+        // mismatched current node type with index metadata
+        if (shardRouting.assignedToNode()) {
+            DiscoveryNode currentNode = allocation.nodes().getNodes().get(shardRouting.currentNodeId());
+            if (remoteStoreEnabledIndex && !currentNode.isRemoteStoreNode()) {
+                // other checks should prevent this case
+                return getReason(false, false, shardRouting.primary(), targetNode,
+                    " because remote_store_enabled index found on a non remote node");
+            }
+        }
+        // allocations and relocations must be towards a remote node
+        if (remoteStoreEnabledIndex && !migrationDirection.equals(Direction.DOCREP)) {
+            if (!targetNode.isRemoteStoreNode()) {
+                return getReason(false, !shardRouting.assignedToNode(), shardRouting.primary(), targetNode,
+                    " for remote_store_enabled index");
             }
         }
         return null;
