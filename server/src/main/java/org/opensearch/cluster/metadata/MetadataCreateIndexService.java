@@ -52,6 +52,7 @@ import org.opensearch.cluster.ack.CreateIndexClusterStateUpdateResponse;
 import org.opensearch.cluster.block.ClusterBlock;
 import org.opensearch.cluster.block.ClusterBlockLevel;
 import org.opensearch.cluster.block.ClusterBlocks;
+import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.routing.IndexRoutingTable;
 import org.opensearch.cluster.routing.RoutingTable;
@@ -100,7 +101,6 @@ import org.opensearch.indices.InvalidIndexNameException;
 import org.opensearch.indices.ShardLimitValidator;
 import org.opensearch.indices.SystemIndices;
 import org.opensearch.indices.replication.common.ReplicationType;
-import org.opensearch.node.Node;
 import org.opensearch.node.remotestore.RemoteStoreNodeAttribute;
 import org.opensearch.threadpool.ThreadPool;
 
@@ -144,6 +144,7 @@ import static org.opensearch.cluster.metadata.Metadata.DEFAULT_REPLICA_COUNT_SET
 import static org.opensearch.index.IndexModule.INDEX_STORE_TYPE_SETTING;
 import static org.opensearch.indices.IndicesService.CLUSTER_REPLICATION_TYPE_SETTING;
 import static org.opensearch.node.remotestore.RemoteStoreNodeAttribute.isRemoteDataAttributePresent;
+import static org.opensearch.node.remotestore.RemoteStoreNodeService.isMigratingToRemoteStore;
 
 /**
  * Service responsible for submitting create index requests
@@ -945,7 +946,7 @@ public class MetadataCreateIndexService {
         indexSettingsBuilder.put(SETTING_INDEX_UUID, UUIDs.randomBase64UUID());
 
         updateReplicationStrategy(indexSettingsBuilder, request.settings(), settings, combinedTemplateSettings);
-        updateRemoteStoreSettings(indexSettingsBuilder, settings);
+        updateRemoteStoreSettings(indexSettingsBuilder, currentState, clusterSettings, settings, request.index());
 
         if (sourceMetadata != null) {
             assert request.resizeType() != null;
@@ -1023,23 +1024,50 @@ public class MetadataCreateIndexService {
     /**
      * Updates index settings to enable remote store by default based on node attributes
      * @param settingsBuilder index settings builder to be updated with relevant settings
+     * @param clusterState state of cluster
      * @param clusterSettings cluster level settings
+     * @param nodeSettings node level settings
+     * @param indexName name of index
      */
-    private static void updateRemoteStoreSettings(Settings.Builder settingsBuilder, Settings clusterSettings) {
-        if (isRemoteDataAttributePresent(clusterSettings)) {
-            settingsBuilder.put(SETTING_REMOTE_STORE_ENABLED, true)
-                .put(
-                    SETTING_REMOTE_SEGMENT_STORE_REPOSITORY,
-                    clusterSettings.get(
-                        Node.NODE_ATTRIBUTES.getKey() + RemoteStoreNodeAttribute.REMOTE_STORE_SEGMENT_REPOSITORY_NAME_ATTRIBUTE_KEY
-                    )
-                )
-                .put(
-                    SETTING_REMOTE_TRANSLOG_STORE_REPOSITORY,
-                    clusterSettings.get(
-                        Node.NODE_ATTRIBUTES.getKey() + RemoteStoreNodeAttribute.REMOTE_STORE_TRANSLOG_REPOSITORY_NAME_ATTRIBUTE_KEY
-                    )
-                );
+    public static void updateRemoteStoreSettings(
+        Settings.Builder settingsBuilder,
+        ClusterState clusterState,
+        ClusterSettings clusterSettings,
+        Settings nodeSettings,
+        String indexName
+    ) {
+        if (isRemoteDataAttributePresent(nodeSettings) || isMigratingToRemoteStore(clusterSettings)) {
+            String segmentRepo, translogRepo;
+
+            Optional<DiscoveryNode> remoteNode = clusterState.nodes()
+                .getNodes()
+                .values()
+                .stream()
+                .filter(DiscoveryNode::isRemoteStoreNode)
+                .findFirst();
+
+            if (remoteNode.isPresent()) {
+                translogRepo = remoteNode.get()
+                    .getAttributes()
+                    .get(RemoteStoreNodeAttribute.REMOTE_STORE_TRANSLOG_REPOSITORY_NAME_ATTRIBUTE_KEY);
+                segmentRepo = remoteNode.get()
+                    .getAttributes()
+                    .get(RemoteStoreNodeAttribute.REMOTE_STORE_SEGMENT_REPOSITORY_NAME_ATTRIBUTE_KEY);
+                if (segmentRepo != null && translogRepo != null) {
+                    if (isMigratingToRemoteStore(clusterSettings)) {
+                        settingsBuilder.put(SETTING_REPLICATION_TYPE, ReplicationType.SEGMENT);
+                    }
+                    settingsBuilder.put(SETTING_REMOTE_STORE_ENABLED, true)
+                        .put(SETTING_REMOTE_SEGMENT_STORE_REPOSITORY, segmentRepo)
+                        .put(SETTING_REMOTE_TRANSLOG_STORE_REPOSITORY, translogRepo);
+                } else {
+                    ValidationException validationException = new ValidationException();
+                    validationException.addValidationErrors(
+                        Collections.singletonList("Cluster is migrating to remote store but no remote node found, failing index creation")
+                    );
+                    throw new IndexCreationException(indexName, validationException);
+                }
+            }
         }
     }
 
