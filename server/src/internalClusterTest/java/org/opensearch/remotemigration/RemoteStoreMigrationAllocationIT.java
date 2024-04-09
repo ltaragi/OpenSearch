@@ -9,9 +9,11 @@
 package org.opensearch.remotemigration;
 
 import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplanation;
+import org.opensearch.action.admin.cluster.reroute.ClusterRerouteResponse;
 import org.opensearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
 import org.opensearch.action.support.ActiveShardCount;
 import org.opensearch.client.Client;
+import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
@@ -20,14 +22,20 @@ import org.opensearch.cluster.routing.ShardRoutingState;
 import org.opensearch.cluster.routing.allocation.AllocateUnassignedDecision;
 import org.opensearch.cluster.routing.allocation.MoveDecision;
 import org.opensearch.cluster.routing.allocation.NodeAllocationResult;
+import org.opensearch.cluster.routing.allocation.command.MoveAllocationCommand;
 import org.opensearch.cluster.routing.allocation.decider.Decision;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.IndexService;
+import org.opensearch.plugins.Plugin;
+import org.opensearch.remotestore.multipart.mocks.MockFsRepositoryPlugin;
+import org.opensearch.test.InternalSettingsPlugin;
+import org.opensearch.test.InternalTestCluster;
 import org.opensearch.test.OpenSearchIntegTestCase;
+import org.opensearch.test.transport.MockTransportService;
 
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE_ENABLED;
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.CompatibilityMode.MIXED;
@@ -46,6 +54,18 @@ public class RemoteStoreMigrationAllocationIT extends MigrationBaseTestCase {
 
     private static final ClusterUpdateSettingsRequest updateSettingsRequest = new ClusterUpdateSettingsRequest();
     private Client client;
+
+    @Override
+    protected Collection<Class<? extends Plugin>> nodePlugins() {
+        /* Adding the following mock plugins:
+        - InternalSettingsPlugin : To override default intervals of retention lease and global ckp sync
+        - MockFsRepositoryPlugin and MockTransportService.TestPlugin: To ensure remote interactions are not no-op and retention leases are properly propagated
+         */
+        return Stream.concat(
+            super.nodePlugins().stream(),
+            Stream.of(InternalSettingsPlugin.class, MockFsRepositoryPlugin.class, MockTransportService.TestPlugin.class)
+        ).collect(Collectors.toList());
+    }
 
     // tests for primary shard copy allocation with MIXED mode and REMOTE_STORE direction
 
@@ -320,6 +340,148 @@ public class RemoteStoreMigrationAllocationIT extends MigrationBaseTestCase {
         assertNonAllocation(!isReplicaAllocation);
     }
 
+    public void testTrial() throws Exception {
+        logger.info(" --> initialize cluster");
+        initializeCluster(false);
+
+        logger.info(" --> add non-remote nodes");
+        String nonRemoteNodeName1 = internalCluster().startDataOnlyNode();
+        String nonRemoteNodeName2 = internalCluster().startDataOnlyNode();
+        String nonRemoteNodeName3 = internalCluster().startDataOnlyNode();
+        internalCluster().validateClusterFormed();
+        DiscoveryNode nonRemoteNode1 = assertNodeInCluster(nonRemoteNodeName1);
+        DiscoveryNode nonRemoteNode2 = assertNodeInCluster(nonRemoteNodeName2);
+        DiscoveryNode nonRemoteNode3 = assertNodeInCluster(nonRemoteNodeName3);
+
+        // Initially: Primary and 2 Replicas on non-remote nodes
+        logger.info(" --> allocate primaries and replicas");
+        Settings indexSettings = Settings.builder()
+            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 2)
+            .put(IndexService.RETENTION_LEASE_SYNC_INTERVAL_SETTING.getKey(), "1s")
+            .put(IndexService.GLOBAL_CHECKPOINT_SYNC_INTERVAL_SETTING.getKey(), "1s")
+            .build();
+        createIndex(TEST_INDEX, indexSettings);
+        ensureGreen(TEST_INDEX);
+
+        // To start migration
+        setClusterMode(MIXED.mode);
+        setDirection(REMOTE_STORE.direction);
+
+        logger.info(" --> add remote nodes");
+        addRemote = true;
+        String remoteNodeName1 = internalCluster().startDataOnlyNode();
+        String remoteNodeName2 = internalCluster().startDataOnlyNode();
+        DiscoveryNode remoteNode1 = assertNodeInCluster(remoteNodeName1);
+        DiscoveryNode remoteNode2 = assertNodeInCluster(remoteNodeName2);
+
+        logger.info("---> Starting doc ingestion in parallel thread");
+        AsyncIndexingService asyncIndexingService = new AsyncIndexingService(TEST_INDEX);
+        asyncIndexingService.startIndexing();
+
+        String primaryShardNodeName = primaryNodeName(TEST_INDEX);
+        logger.info(" --> migrate primary shard copy from {} to remote enabled node {}", primaryShardNodeName, remoteNodeName1);
+        attemptRelocation(primaryShardNodeName, remoteNodeName1);
+        ensureGreen(TEST_INDEX);
+
+        String replicaShardNodeName1 = replicaNodeName(TEST_INDEX);
+        logger.info(" --> migrate replica shard copy from {} to remote enabled node {}", replicaShardNodeName1, remoteNodeName2);
+        attemptRelocation(replicaShardNodeName1, remoteNodeName2);
+        ensureGreen(TEST_INDEX);
+
+        logger.info("---> Stop remote store enabled node");
+        internalCluster().stopRandomNode(InternalTestCluster.nameFilter(remoteNodeName1));
+        ensureStableCluster(5);
+        ensureYellow(TEST_INDEX);
+//
+//        ShardRouting primaryShardRouting0 = getShardRouting(true);
+//        String currentPrimaryNodeId0 = primaryShardRouting0.currentNodeId();
+//        assertEquals(remoteNode1.getId(), currentPrimaryNodeId0);
+//
+//        logger.info("--> kill the remote node of the current primary");
+//        internalCluster().stopRandomNode(InternalTestCluster.nameFilter(remoteNodeName1));
+//        ensureStableCluster(5);
+
+    }
+
+    // test for primary promotion preferences
+
+    // test for primary promotion preferences
+
+    public void testPreferReplicaOnRemoteNodeForPrimaryPromotion() throws Exception {
+        logger.info(" --> initialize cluster");
+        initializeCluster(false);
+
+        logger.info(" --> add remote and non-remote nodes");
+        setClusterMode(MIXED.mode);
+        String nonRemoteNodeName1 = internalCluster().startNode();
+        String nonRemoteNodeName2 = internalCluster().startNode();
+        addRemote = true;
+        String remoteNodeName1 = internalCluster().startNode();
+        String remoteNodeName2 = internalCluster().startNode();
+        String remoteNodeName3 = internalCluster().startNode();
+        internalCluster().validateClusterFormed();
+        DiscoveryNode nonRemoteNode1 = assertNodeInCluster(nonRemoteNodeName1);
+        DiscoveryNode nonRemoteNode2 = assertNodeInCluster(nonRemoteNodeName2);
+        DiscoveryNode remoteNode1 = assertNodeInCluster(remoteNodeName1);
+        DiscoveryNode remoteNode2 = assertNodeInCluster(remoteNodeName2);
+        DiscoveryNode remoteNode3 = assertNodeInCluster(remoteNodeName3);
+
+        // Desired state: 1 primary, 4 replicas
+        // Primary and 2 Replicas on remote nodes, 2 replicas on non-remote nodes
+        logger.info(" --> allocate primaries and replicas");
+        prepareIndexWithAllocatedPrimary(TEST_INDEX, 1, 4, remoteNodeName1);
+        assertAllocation(true, Optional.of(remoteNode1));
+        ensureYellowAndNoInitializingShards(TEST_INDEX);
+        attemptAllocation(Optional.of(remoteNodeName2));
+        ensureYellowAndNoInitializingShards(TEST_INDEX);
+        attemptAllocation(Optional.of(remoteNodeName3));
+        ensureYellowAndNoInitializingShards(TEST_INDEX);
+        attemptAllocation(Optional.of(nonRemoteNodeName1));
+        ensureYellowAndNoInitializingShards(TEST_INDEX);
+        attemptAllocation(Optional.of(nonRemoteNodeName2));
+        ensureGreen(TEST_INDEX);
+
+        setDirection(REMOTE_STORE.direction);
+
+        ShardRouting primaryShardRouting0 = getShardRouting(true);
+        String currentPrimaryNodeId0 = primaryShardRouting0.currentNodeId();
+        assertEquals(remoteNode1.getId(), currentPrimaryNodeId0);
+
+        logger.info("--> kill the remote node of the current primary");
+        internalCluster().stopRandomNode(InternalTestCluster.nameFilter(remoteNodeName1));
+        ensureStableCluster(5);
+
+        logger.info("--> verify new primary is on one of the remote nodes");
+        ShardRouting primaryShardRouting1 = getShardRouting(true);
+        String currentPrimaryNodeId1 = primaryShardRouting1.currentNodeId();
+        assertTrue(currentPrimaryNodeId1.equals(remoteNode2.getId()) || currentPrimaryNodeId1.equals(remoteNode3.getId()));
+        assertNotEquals(primaryShardRouting0, primaryShardRouting1);
+
+        logger.info("--> again kill the remote node of the current primary");
+        String nodeNameToKill = currentPrimaryNodeId1.equals(remoteNode2.getId()) ? remoteNodeName2 : remoteNodeName3;
+        internalCluster().stopRandomNode(InternalTestCluster.nameFilter(nodeNameToKill));
+        ensureStableCluster(4);
+
+        logger.info("--> verify new primary is on one of the remote nodes");
+        ShardRouting primaryShardRouting2 = getShardRouting(true);
+        String currentPrimaryNodeId2 = primaryShardRouting2.currentNodeId();
+        assertTrue(currentPrimaryNodeId2.equals(remoteNode2.getId()) || currentPrimaryNodeId2.equals(remoteNode3.getId()));
+        assertNotEquals(primaryShardRouting1, primaryShardRouting2);
+        assertNotEquals(currentPrimaryNodeId1, currentPrimaryNodeId2);
+
+        logger.info("--> again kill the remote node of the current primary");
+        nodeNameToKill = currentPrimaryNodeId2.equals(remoteNode2.getId()) ? remoteNodeName2 : remoteNodeName3;
+        internalCluster().stopRandomNode(InternalTestCluster.nameFilter(nodeNameToKill));
+        ensureStableCluster(3);
+
+        logger.info("--> verify new primary is on one of the non-remote nodes");
+        ShardRouting primaryShardRouting3 = getShardRouting(true);
+        String currentPrimaryNodeId3 = primaryShardRouting3.currentNodeId();
+        assertTrue(currentPrimaryNodeId3.equals(nonRemoteNode1.getId()) || currentPrimaryNodeId3.equals(nonRemoteNode2.getId()));
+        assertNotEquals(primaryShardRouting2, primaryShardRouting3);
+        assertNotEquals(currentPrimaryNodeId2, currentPrimaryNodeId3);
+    }
+
     // bootstrap a cluster
     public void initializeCluster(boolean remoteClusterManager) {
         addRemote = remoteClusterManager;
@@ -430,19 +592,7 @@ public class RemoteStoreMigrationAllocationIT extends MigrationBaseTestCase {
 
     public void prepareIndexWithAllocatedPrimary(DiscoveryNode primaryShardNode, Optional<String> name) {
         String indexName = name.orElse(TEST_INDEX);
-        client.admin()
-            .indices()
-            .prepareCreate(indexName)
-            .setSettings(
-                Settings.builder()
-                    .put("index.number_of_shards", 1)
-                    .put("index.number_of_replicas", 1)
-                    .put("index.routing.allocation.include._name", primaryShardNode.getName())
-                    .put("index.routing.allocation.exclude._name", allNodesExcept(primaryShardNode.getName()))
-            )
-            .setWaitForActiveShards(ActiveShardCount.ONE)
-            .execute()
-            .actionGet();
+        prepareIndexWithAllocatedPrimary(indexName, 1, 1, primaryShardNode.getName());
 
         ensureYellowAndNoInitializingShards(TEST_INDEX);
 
@@ -451,6 +601,24 @@ public class RemoteStoreMigrationAllocationIT extends MigrationBaseTestCase {
 
         logger.info(" --> verify non-allocation of replica shard");
         assertNonAllocation(false);
+    }
+
+    public void prepareIndexWithAllocatedPrimary(String indexName, int shardCount, int replicaCount, String nodeName) {
+        client.admin()
+            .indices()
+            .prepareCreate(indexName)
+            .setSettings(
+                Settings.builder()
+                    .put("index.number_of_shards", shardCount)
+                    .put("index.number_of_replicas", replicaCount)
+                    .put("index.routing.allocation.include._name", nodeName)
+                    .put("index.routing.allocation.exclude._name", allNodesExcept(nodeName))
+                    .put(IndexService.RETENTION_LEASE_SYNC_INTERVAL_SETTING.getKey(), "1s")
+                    .put(IndexService.GLOBAL_CHECKPOINT_SYNC_INTERVAL_SETTING.getKey(), "1s")
+            )
+            .setWaitForActiveShards(ActiveShardCount.ONE)
+            .execute()
+            .actionGet();
     }
 
     // get allocation and relocation decisions for all nodes
@@ -463,6 +631,7 @@ public class RemoteStoreMigrationAllocationIT extends MigrationBaseTestCase {
             .actionGet();
     }
 
+    // attempt allocating the shard copy to targetNode
     private void attemptAllocation(Optional<String> targetNodeName) {
         String nodeName = targetNodeName.orElse(null);
         Settings.Builder settingsBuilder;
@@ -486,6 +655,35 @@ public class RemoteStoreMigrationAllocationIT extends MigrationBaseTestCase {
                 .put("index.routing.allocation.exclude._name", clusterManagerNodeName);
         }
         client.admin().indices().prepareUpdateSettings(TEST_INDEX).setSettings(settingsBuilder).execute().actionGet();
+    }
+
+    // attempt relocating the shard copy from currentNode to targetNode
+    private ClusterRerouteResponse attemptRelocation(String currentNodeName, String targetNodeName) {
+        client.admin()
+            .indices()
+            .prepareUpdateSettings(TEST_INDEX)
+            .setSettings(
+                Settings.builder()
+                    .put("index.routing.allocation.enable", "none")
+                    .put("index.routing.allocation.include._name", targetNodeName)
+                    .put("index.routing.allocation.exclude._name", allNodesExcept(targetNodeName))
+            )
+            .execute()
+            .actionGet();
+
+        ensureGreen(TEST_INDEX);
+
+        ClusterRerouteResponse rerouteResponse = client.admin()
+            .cluster()
+            .prepareReroute()
+            .setExplain(true)
+            .add(new MoveAllocationCommand(TEST_INDEX, 0, currentNodeName, targetNodeName))
+            .execute()
+            .actionGet();
+
+        ensureGreen(TEST_INDEX);
+
+        return rerouteResponse;
     }
 
     private ShardRouting getShardRouting(boolean isPrimary) {
