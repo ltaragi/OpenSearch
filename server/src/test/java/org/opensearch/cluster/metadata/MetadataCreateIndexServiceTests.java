@@ -1678,7 +1678,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
         assertThat(
             error.getCause().getMessage(),
             containsString(
-                "SEGMENT_STORE_REPOSITORY = my-segment-repo-1, REMOTE_TRANSLOG_STORE_REPOSITORY = null. Repository paths can not be null, failing index creation."
+                "SEGMENT_STORE_REPOSITORY = my-segment-repo-1, REMOTE_TRANSLOG_STORE_REPOSITORY = null. Repository paths can not be null, failing index creation"
             )
         );
 

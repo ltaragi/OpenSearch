@@ -1083,9 +1083,10 @@ public class MetadataCreateIndexService {
                         Collections.singletonList(
                             String.format(
                                 Locale.ROOT,
-                                "SEGMENT_STORE_REPOSITORY = %s, REMOTE_TRANSLOG_STORE_REPOSITORY = %s. Repository paths can not be null, failing index creation.",
+                                "SEGMENT_STORE_REPOSITORY = %s, REMOTE_TRANSLOG_STORE_REPOSITORY = %s. Repository paths can not be null, failing index creation for: [%s]",
                                 segmentRepo,
-                                translogRepo
+                                translogRepo,
+                                indexName
                             )
                         )
                     );
@@ -1095,8 +1096,9 @@ public class MetadataCreateIndexService {
                 ValidationException validationException = new ValidationException();
                 String reason = String.format(
                     Locale.ROOT,
-                    "%s but no remote node found, failing index creation",
-                    (isMigratingToRemoteStore(clusterSettings) ? "Cluster is migrating to remote store" : "Cluster is remote store backed")
+                    "%s but no remote node found, failing index creation for: [%s]",
+                    (isMigratingToRemoteStore(clusterSettings) ? "Cluster is migrating to remote store" : "Cluster is remote store backed"),
+                    indexName
                 );
                 validationException.addValidationErrors(Collections.singletonList(reason));
                 throw new IndexCreationException(indexName, validationException);

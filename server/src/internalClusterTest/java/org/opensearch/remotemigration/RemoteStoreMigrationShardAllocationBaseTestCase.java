@@ -310,14 +310,19 @@ public class RemoteStoreMigrationShardAllocationBaseTestCase extends MigrationBa
     }
 
     // restore indices from a snapshot
-    public static RestoreSnapshotResponse restoreSnapshot(String snapshotRepoName, String snapshotName, String restoredIndexName) {
+    public static RestoreSnapshotResponse restoreSnapshot(
+        String snapshotRepoName,
+        String snapshotName,
+        String restoredIndexName,
+        String... indicesToRestore
+    ) {
         RestoreSnapshotResponse restoreSnapshotResponse = internalCluster().client()
             .admin()
             .cluster()
             .prepareRestoreSnapshot(snapshotRepoName, snapshotName)
             .setWaitForCompletion(false)
-            .setIndices(TEST_INDEX)
-            .setRenamePattern(TEST_INDEX)
+            .setIndices(indicesToRestore)
+            .setRenamePattern(indicesToRestore[0])
             .setRenameReplacement(restoredIndexName)
             .get();
         assertEquals(restoreSnapshotResponse.status(), RestStatus.ACCEPTED);

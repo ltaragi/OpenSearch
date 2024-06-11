@@ -16,12 +16,14 @@ import org.opensearch.test.OpenSearchIntegTestCase;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Optional;
 
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.CompatibilityMode.MIXED;
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.CompatibilityMode.STRICT;
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.Direction.REMOTE_STORE;
 import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertAcked;
+import static org.hamcrest.Matchers.containsString;
 
 @OpenSearchIntegTestCase.ClusterScope(scope = OpenSearchIntegTestCase.Scope.TEST, numDataNodes = 0)
 public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationShardAllocationBaseTestCase {
@@ -75,18 +77,22 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
         logger.info("Add remote and non-remote nodes");
         setClusterMode(MIXED.mode);
         addRemote = false;
-        String nonRemoteNodeName = internalCluster().startNode();
+        nonRemoteNodeName = internalCluster().startNode();
         addRemote = true;
-        String remoteNodeName = internalCluster().startNode();
+        remoteNodeName = internalCluster().startNode();
         internalCluster().validateClusterFormed();
         assertNodeInCluster(nonRemoteNodeName);
         assertNodeInCluster(remoteNodeName);
 
-        logger.info("Create a non remote-backed index");
-        createIndex(TEST_INDEX, 0);
+        logger.info("Create a non remote-backed indices");
+        createIndex(TEST_INDEX + "-1", 0);
+        createIndex(TEST_INDEX + "-2", 0);
+        createIndex(TEST_INDEX + "-3", 0);
 
-        logger.info("Verify that non remote stored backed index is created");
-        assertNonRemoteStoreBackedIndex(TEST_INDEX);
+        logger.info("Verify that non remote stored backed indices are created");
+        assertNonRemoteStoreBackedIndex(TEST_INDEX + "-1");
+        assertNonRemoteStoreBackedIndex(TEST_INDEX + "-2");
+        assertNonRemoteStoreBackedIndex(TEST_INDEX + "-3");
 
         logger.info("Create repository");
         String snapshotName = "test-snapshot";
@@ -100,11 +106,11 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
 
         logger.info("Create snapshot of non remote stored backed index");
 
-        createSnapshot(snapshotRepoName, snapshotName, TEST_INDEX);
+        createSnapshot(snapshotRepoName, snapshotName, TEST_INDEX + "-1", TEST_INDEX + "-2", TEST_INDEX + "-3");
 
         logger.info("Restore index from snapshot under NONE direction");
-        String restoredIndexName1 = TEST_INDEX + "-restored1";
-        restoreSnapshot(snapshotRepoName, snapshotName, restoredIndexName1);
+        String restoredIndexName1 = TEST_INDEX + "-1-restored1";
+        restoreSnapshot(snapshotRepoName, snapshotName, restoredIndexName1, TEST_INDEX + "-1");
         ensureGreen(restoredIndexName1);
 
         logger.info("Verify that restored index is non remote-backed");
@@ -113,11 +119,38 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
         logger.info("Restore index from snapshot under REMOTE_STORE direction");
         setDirection(REMOTE_STORE.direction);
         String restoredIndexName2 = TEST_INDEX + "-restored2";
-        restoreSnapshot(snapshotRepoName, snapshotName, restoredIndexName2);
+        restoreSnapshot(snapshotRepoName, snapshotName, restoredIndexName2, TEST_INDEX + "-2");
         ensureGreen(restoredIndexName2);
 
-        logger.info("Verify that restored index is non remote-backed");
-        assertRemoteStoreBackedIndex(restoredIndexName2);
+        logger.info("Stop the remote node");
+        stopRemoteNode();
+
+        logger.info("Restoring from snapshot without a remote node should fail");
+        String restoredIndexName3 = TEST_INDEX + "-restored3";
+        Exception exception = assertThrows(
+            Exception.class,
+            () -> restoreSnapshot(
+                snapshotRepoName,
+                snapshotName,
+                restoredIndexName3,
+                TEST_INDEX + "-1",
+                TEST_INDEX + "-2",
+                TEST_INDEX + "-3"
+            )
+        );
+        assertThat(
+            exception.getMessage(),
+            containsString(
+                String.format(
+                    Locale.ROOT,
+                    "Cluster is migrating to remote store but no remote node found, failing index creation for: [%s-1,%s-2,%s-3]",
+                    TEST_INDEX,
+                    TEST_INDEX,
+                    TEST_INDEX
+                )
+            )
+        );
+
     }
 
     // compatibility mode setting test
