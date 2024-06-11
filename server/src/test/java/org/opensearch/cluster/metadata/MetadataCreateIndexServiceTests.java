@@ -1645,8 +1645,7 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
         );
 
         Map<String, String> missingTranslogAttribute = Map.of(REMOTE_STORE_SEGMENT_REPOSITORY_NAME_ATTRIBUTE_KEY, "my-segment-repo-1");
-
-        DiscoveryNodes finalDiscoveryNodes = DiscoveryNodes.builder()
+        DiscoveryNodes discoveryNodes1 = DiscoveryNodes.builder()
             .add(nonRemoteClusterManagerNode)
             .add(
                 new DiscoveryNode(
@@ -1659,12 +1658,12 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
             )
             .build();
 
-        ClusterState finalClusterState = ClusterState.builder(ClusterName.DEFAULT).nodes(finalDiscoveryNodes).build();
-        ClusterSettings finalClusterSettings = clusterSettings;
+        ClusterSettings clusterSettings1 = clusterSettings;
 
-        final IndexCreationException error = expectThrows(IndexCreationException.class, () -> {
+        // failure due to missing remote repository paths
+        IndexCreationException error = expectThrows(IndexCreationException.class, () -> {
             aggregateIndexSettings(
-                finalClusterState,
+                ClusterState.builder(ClusterName.DEFAULT).nodes(discoveryNodes1).build(),
                 request,
                 Settings.EMPTY,
                 null,
@@ -1672,7 +1671,29 @@ public class MetadataCreateIndexServiceTests extends OpenSearchTestCase {
                 IndexScopedSettings.DEFAULT_SCOPED_SETTINGS,
                 randomShardLimitService(),
                 Collections.emptySet(),
-                finalClusterSettings
+                clusterSettings1
+            );
+        });
+        assertEquals(error.getMessage(), "failed to create index [test-index]");
+        assertThat(
+            error.getCause().getMessage(),
+            containsString(
+                "SEGMENT_STORE_REPOSITORY = my-segment-repo-1, REMOTE_TRANSLOG_STORE_REPOSITORY = null. Repository paths can not be null, failing index creation."
+            )
+        );
+
+        // failure due to missing remote node during remote store migration
+        error = expectThrows(IndexCreationException.class, () -> {
+            aggregateIndexSettings(
+                ClusterState.builder(ClusterName.DEFAULT).nodes(DiscoveryNodes.builder().add(nonRemoteClusterManagerNode)).build(),
+                request,
+                Settings.EMPTY,
+                null,
+                Settings.EMPTY,
+                IndexScopedSettings.DEFAULT_SCOPED_SETTINGS,
+                randomShardLimitService(),
+                Collections.emptySet(),
+                clusterSettings1
             );
         });
         assertEquals(error.getMessage(), "failed to create index [test-index]");

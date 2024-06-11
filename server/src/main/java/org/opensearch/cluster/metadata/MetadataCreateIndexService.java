@@ -1080,10 +1080,26 @@ public class MetadataCreateIndexService {
                 } else {
                     ValidationException validationException = new ValidationException();
                     validationException.addValidationErrors(
-                        Collections.singletonList("Cluster is migrating to remote store but no remote node found, failing index creation")
+                        Collections.singletonList(
+                            String.format(
+                                Locale.ROOT,
+                                "SEGMENT_STORE_REPOSITORY = %s, REMOTE_TRANSLOG_STORE_REPOSITORY = %s. Repository paths can not be null, failing index creation.",
+                                segmentRepo,
+                                translogRepo
+                            )
+                        )
                     );
                     throw new IndexCreationException(indexName, validationException);
                 }
+            } else {
+                ValidationException validationException = new ValidationException();
+                String reason = String.format(
+                    Locale.ROOT,
+                    "%s but no remote node found, failing index creation",
+                    (isMigratingToRemoteStore(clusterSettings) ? "Cluster is migrating to remote store" : "Cluster is remote store backed")
+                );
+                validationException.addValidationErrors(Collections.singletonList(reason));
+                throw new IndexCreationException(indexName, validationException);
             }
         }
     }
