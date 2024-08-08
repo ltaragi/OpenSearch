@@ -301,7 +301,7 @@ public class RemoteStoreMigrationShardAllocationBaseTestCase extends MigrationBa
                 .prepareCreate(indexName)
                 .setSettings(
                     Settings.builder()
-                        .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                        .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 2)
                         .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, replicaCount)
                         .build()
                 )

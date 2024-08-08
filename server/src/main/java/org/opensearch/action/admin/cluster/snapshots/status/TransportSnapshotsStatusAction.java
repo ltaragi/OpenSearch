@@ -52,12 +52,14 @@ import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.util.CollectionUtils;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.index.snapshots.IndexShardSnapshotStatus;
 import org.opensearch.repositories.IndexId;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.repositories.Repository;
 import org.opensearch.repositories.RepositoryData;
 import org.opensearch.snapshots.Snapshot;
+import org.opensearch.snapshots.SnapshotException;
 import org.opensearch.snapshots.SnapshotId;
 import org.opensearch.snapshots.SnapshotInfo;
 import org.opensearch.snapshots.SnapshotMissingException;
@@ -81,6 +83,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static java.util.Collections.unmodifiableMap;
+import static org.opensearch.gateway.remote.RemoteClusterStateService.REMOTE_CLUSTER_STATE_ENABLED_SETTING;
 
 /**
  * Transport action for accessing snapshot status
@@ -94,6 +97,12 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
     private final RepositoriesService repositoriesService;
 
     private final TransportNodesSnapshotsStatus transportNodesSnapshotsStatus;
+
+    // these two will be obtained from the clusterSettings
+    // to be fetched and set in loadRepositoryData
+    private long maximumAllowedShardCount = -1;
+    private boolean hasV2ClusterSetting = false;
+    private boolean isRemoteStoreEnabledCluster = false;
 
     @Inject
     public TransportSnapshotsStatusAction(
@@ -139,6 +148,8 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
         final ClusterState state,
         final ActionListener<SnapshotsStatusResponse> listener
     ) throws Exception {
+        logger.info("*** here snapshots = {}", request.snapshots());
+//        logger.info("*** here indices = {}", request.indices());
         final SnapshotsInProgress snapshotsInProgress = state.custom(SnapshotsInProgress.TYPE, SnapshotsInProgress.EMPTY);
         List<SnapshotsInProgress.Entry> currentSnapshots = SnapshotsService.currentSnapshots(
             snapshotsInProgress,
@@ -292,7 +303,8 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
                         Collections.unmodifiableList(shardStatusBuilder),
                         entry.includeGlobalState(),
                         entry.startTime(),
-                        Math.max(threadPool.absoluteTimeInMillis() - entry.startTime(), 0L)
+                        Math.max(threadPool.absoluteTimeInMillis() - entry.startTime(), 0L),
+                        0L
                     )
                 );
             }
@@ -314,40 +326,51 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
         String repositoryName,
         ActionListener<SnapshotsStatusResponse> listener
     ) {
-        final Set<String> requestedSnapshotNames = Sets.newHashSet(request.snapshots());
+        isRemoteStoreEnabledCluster = clusterService.getClusterSettings().get(REMOTE_CLUSTER_STATE_ENABLED_SETTING);
+        // TODO: get these two from cluster settings
+        maximumAllowedShardCount = 4;
+        hasV2ClusterSetting = true;
+
         final StepListener<RepositoryData> repositoryDataListener = new StepListener<>();
         repositoriesService.getRepositoryData(repositoryName, repositoryDataListener);
         repositoryDataListener.whenComplete(repositoryData -> {
-            final Map<String, SnapshotId> matchedSnapshotIds = repositoryData.getSnapshotIds()
-                .stream()
-                .filter(s -> requestedSnapshotNames.contains(s.getName()))
-                .collect(Collectors.toMap(SnapshotId::getName, Function.identity()));
-            for (final String snapshotName : request.snapshots()) {
-                if (currentSnapshotNames.contains(snapshotName)) {
-                    // we've already found this snapshot in the current snapshot entries, so skip over
-                    continue;
-                }
-                SnapshotId snapshotId = matchedSnapshotIds.get(snapshotName);
-                if (snapshotId == null) {
-                    // neither in the current snapshot entries nor found in the repository
-                    if (request.ignoreUnavailable()) {
-                        // ignoring unavailable snapshots, so skip over
-                        logger.debug(
-                            "snapshot status request ignoring snapshot [{}], not found in repository [{}]",
-                            snapshotName,
-                            repositoryName
-                        );
-                        continue;
-                    } else {
-                        throw new SnapshotMissingException(repositoryName, snapshotName);
-                    }
-                }
-                SnapshotInfo snapshotInfo = snapshot(snapshotsInProgress, repositoryName, snapshotId);
+            Map<SnapshotId, SnapshotInfo> snapshotsInfoMap = snapshotsInfo(
+                request,
+                repositoryName,
+                repositoryData,
+                snapshotsInProgress,
+                currentSnapshotNames
+            );
+            logger.info("*** snapshotsInfoMap = {}", snapshotsInfoMap);
+            for (Map.Entry<SnapshotId, SnapshotInfo> entry : snapshotsInfoMap.entrySet()) {
+                SnapshotId snapshotId = entry.getKey();
+                SnapshotInfo snapshotInfo = entry.getValue();
+                logger.info("**** Snapshot info of the completed snapshot = {}", snapshotInfo.toString());
                 List<SnapshotIndexShardStatus> shardStatusBuilder = new ArrayList<>();
+
+                // TODO: to be obtained from snapshotInfo
+                int snapshotInfoPinnedTimestamp = 1;
+                boolean blankStatsWithIndexFilter = isRemoteStoreEnabledCluster
+                    && hasV2ClusterSetting
+                    && snapshotInfoPinnedTimestamp > 0
+                    && request.indices().length != 0;
+                long initialSnapshotTotalSize = 0;
+
                 if (snapshotInfo.state().completed()) {
-                    Map<ShardId, IndexShardSnapshotStatus> shardStatuses = snapshotShards(repositoryName, repositoryData, snapshotInfo);
+                    Map<ShardId, IndexShardSnapshotStatus> shardStatuses = snapshotShards(
+                        request,
+                        repositoryName,
+                        repositoryData,
+                        snapshotInfo
+                    );
                     for (Map.Entry<ShardId, IndexShardSnapshotStatus> shardStatus : shardStatuses.entrySet()) {
                         IndexShardSnapshotStatus.Copy lastSnapshotStatus = shardStatus.getValue().asCopy();
+                        logger.info("*** lastSnapshotStatus = {}", lastSnapshotStatus.toString());
+                        if (blankStatsWithIndexFilter) {
+                            logger.info("*** increasing by {}", lastSnapshotStatus.getTotalSize());
+                            initialSnapshotTotalSize += lastSnapshotStatus.getTotalSize();
+                            lastSnapshotStatus = IndexShardSnapshotStatus.newDone(0, 0, 0, 0, 0, 0, null).asCopy();
+                        }
                         shardStatusBuilder.add(new SnapshotIndexShardStatus(shardStatus.getKey(), lastSnapshotStatus));
                     }
                     final SnapshotsInProgress.State state;
@@ -368,17 +391,24 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
                     final long endTime = snapshotInfo.endTime();
                     assert endTime >= startTime || (endTime == 0L && snapshotInfo.state().completed() == false)
                         : "Inconsistent timestamps found in SnapshotInfo [" + snapshotInfo + "]";
-                    builder.add(
-                        new SnapshotStatus(
-                            new Snapshot(repositoryName, snapshotId),
-                            state,
-                            Collections.unmodifiableList(shardStatusBuilder),
-                            snapshotInfo.includeGlobalState(),
-                            startTime,
-                            // Use current time to calculate overall runtime for in-progress snapshots that have endTime == 0
-                            (endTime == 0 ? threadPool.absoluteTimeInMillis() : endTime) - startTime
-                        )
+
+                    logger.info("*** initialSnapshotTotalSize = {}", initialSnapshotTotalSize);
+                    SnapshotStatus snapshotStatus = new SnapshotStatus(
+                        new Snapshot(repositoryName, snapshotId),
+                        state,
+                        Collections.unmodifiableList(shardStatusBuilder),
+                        snapshotInfo.includeGlobalState(),
+                        startTime,
+                        // Use current time to calculate overall runtime for in-progress snapshots that have endTime == 0
+                        (endTime == 0 ? threadPool.absoluteTimeInMillis() : endTime) - startTime,
+                        initialSnapshotTotalSize
                     );
+                    logger.info("*** snapshotStatus = {}", snapshotStatus.toString());
+                    builder.add(snapshotStatus);
+                    SnapshotsStatusResponse response = new SnapshotsStatusResponse(Collections.unmodifiableList(builder));
+                    logger.info("*** SnapshotsStatusResponse.getSnapshots = {}", response.getSnapshots());
+                    logger.info("*** SnapshotsStatusResponse.totalSize = {}", response.getSnapshots().get(0).getStats().getTotalSize());
+                    logger.info("*** SnapshotsStatusResponse = {}", response.getSnapshots().get(0).toString());
                 }
             }
             listener.onResponse(new SnapshotsStatusResponse(Collections.unmodifiableList(builder)));
@@ -407,27 +437,158 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
     }
 
     /**
+     * Returns snapshot info for finished snapshots
+     * @param request         snapshot status request
+     * @param repositoryName  repository name
+     * @param repositoryData    repository data
+     * @param snapshotsInProgress    currently running snapshots
+     * @param currentSnapshotNames    list of names of currently running snapshots
+     * @return map of snapshot id to snapshot info
+     */
+    private Map<SnapshotId, SnapshotInfo> snapshotsInfo(
+        SnapshotsStatusRequest request,
+        String repositoryName,
+        RepositoryData repositoryData,
+        SnapshotsInProgress snapshotsInProgress,
+        Set<String> currentSnapshotNames
+    ) {
+        final Set<String> requestedSnapshotNames = Sets.newHashSet(request.snapshots());
+        final Map<SnapshotId, SnapshotInfo> snapshotsInfoMap = new HashMap<>();
+        final Map<String, SnapshotId> matchedSnapshotIds = repositoryData.getSnapshotIds()
+            .stream()
+            .filter(s -> requestedSnapshotNames.contains(s.getName()))
+            .collect(Collectors.toMap(SnapshotId::getName, Function.identity()));
+        int totalShardsAcrossSnapshots = 0;
+        for (final String snapshotName : request.snapshots()) {
+            if (currentSnapshotNames.contains(snapshotName)) {
+                // we've already found this snapshot in the current snapshot entries, so skip over
+                continue;
+            }
+            SnapshotId snapshotId = matchedSnapshotIds.get(snapshotName);
+            if (snapshotId == null) {
+                // neither in the current snapshot entries nor found in the repository
+                if (request.ignoreUnavailable()) {
+                    // ignoring unavailable snapshots, so skip over
+                    logger.debug(
+                        "snapshot status request ignoring snapshot [{}], not found in repository [{}]",
+                        snapshotName,
+                        repositoryName
+                    );
+                    continue;
+                } else {
+                    throw new SnapshotMissingException(repositoryName, snapshotName);
+                }
+            }
+            SnapshotInfo snapshotInfo = snapshot(snapshotsInProgress, repositoryName, snapshotId);
+            // TODO: to be obtained from snapshotInfo
+            int snapshotInfoPinnedTimestamp = 0;
+            if (snapshotInfoPinnedTimestamp == 0 && request.indices().length == 0) {
+                // not (automated or1)
+                totalShardsAcrossSnapshots += snapshotInfo.totalShards();
+            }
+            snapshotsInfoMap.put(snapshotId, snapshotInfo);
+        }
+        logger.info("*** totalShardsAcrossSnapshots = {}", totalShardsAcrossSnapshots);
+        if (totalShardsAcrossSnapshots > maximumAllowedShardCount && request.indices().length == 0) {
+            // not index filter
+            String cause = "Total shard count [" + totalShardsAcrossSnapshots +
+                    "] is more than the maximum allowed value of shard count [" +
+                    maximumAllowedShardCount +
+                    "] for snapshot status request";
+            throw new SnapshotException(repositoryName, String.join(", ", requestedSnapshotNames), cause) {
+                @Override
+                public RestStatus status() {
+                    return RestStatus.REQUEST_ENTITY_TOO_LARGE;
+                }
+            };
+        }
+        return unmodifiableMap(snapshotsInfoMap);
+    }
+
+    /**
      * Returns status of shards currently finished snapshots
      * <p>
      * This method is executed on cluster-manager node and it's complimentary to the
      * {@link SnapshotShardsService#currentSnapshotShards(Snapshot)} because it
      * returns similar information but for already finished snapshots.
      * </p>
-     *
+     * @param request         snapshot status request
      * @param repositoryName  repository name
      * @param snapshotInfo    snapshot info
      * @return map of shard id to snapshot status
      */
     private Map<ShardId, IndexShardSnapshotStatus> snapshotShards(
+        final SnapshotsStatusRequest request,
         final String repositoryName,
         final RepositoryData repositoryData,
         final SnapshotInfo snapshotInfo
     ) throws IOException {
+        final Set<String> requestedIndexNames = Sets.newHashSet(request.indices());
+        final Map<IndexId, IndexMetadata> indexMetadataMap = new HashMap<>();
+        List<String> indices;
+        if (requestedIndexNames.isEmpty()) {
+            indices = snapshotInfo.indices();
+        } else {
+            indices = snapshotInfo.indices().stream().filter(requestedIndexNames::contains).collect(Collectors.toList());
+        }
         final Repository repository = repositoriesService.repository(repositoryName);
-        final Map<ShardId, IndexShardSnapshotStatus> shardStatus = new HashMap<>();
-        for (String index : snapshotInfo.indices()) {
+        String snapshotName = snapshotInfo.snapshotId().getName();
+        // TODO: to be obtained from snapshotInfo
+        int snapshotInfoPinnedTimestamp = 1;
+        int totalShardsAcrossIndices = 0;
+        logger.info("*** request.indices() = {}", request.indices());
+        logger.info("*** indices = {}", indices);
+        for (String index : indices) {
             IndexId indexId = repositoryData.resolveIndexId(index);
             IndexMetadata indexMetadata = repository.getSnapshotIndexMetaData(repositoryData, snapshotInfo.snapshotId(), indexId);
+            if (indexMetadata != null) {
+                if (requestedIndexNames.isEmpty() == false && snapshotInfoPinnedTimestamp == 0) {
+                    totalShardsAcrossIndices += indexMetadata.getNumberOfShards();
+                }
+                indexMetadataMap.put(indexId, indexMetadata);
+            } else if (requestedIndexNames.isEmpty() == false) {
+                // requested index not found in the snapshot at the repository
+                if (request.ignoreUnavailable()) {
+                    // ignoring unavailable index
+                    logger.debug(
+                        "snapshot status request ignoring index [{}], not found in snapshot[{}] in repository [{}]",
+                        index,
+                        snapshotName,
+                        repositoryName
+                    );
+                } else {
+                    String cause = "[" + index + "] is missing in snapshot [" + snapshotName + "]";
+                    throw new SnapshotException(repositoryName, snapshotName, cause) {
+                        @Override
+                        public RestStatus status() {
+                            return RestStatus.NOT_FOUND;
+                        }
+                    };
+                }
+            }
+        }
+
+        if (totalShardsAcrossIndices > maximumAllowedShardCount
+            && requestedIndexNames.isEmpty() == false
+            && snapshotInfoPinnedTimestamp == 0) {
+            String cause = "Total shard count ["
+                + totalShardsAcrossIndices
+                + "] across the requested indices ["
+                + String.join(", " + requestedIndexNames)
+                + "] is more than the maximum allowed value of shard count ["
+                + maximumAllowedShardCount
+                + "] for snapshot status request";
+            throw new SnapshotException(repositoryName, snapshotName, cause) {
+                @Override
+                public RestStatus status() {
+                    return RestStatus.REQUEST_ENTITY_TOO_LARGE;
+                }
+            };
+        }
+
+        final Map<ShardId, IndexShardSnapshotStatus> shardStatus = new HashMap<>();
+        for (Map.Entry<IndexId, IndexMetadata> entry : indexMetadataMap.entrySet()) {
+            IndexMetadata indexMetadata = entry.getValue();
             if (indexMetadata != null) {
                 int numberOfShards = indexMetadata.getNumberOfShards();
                 for (int i = 0; i < numberOfShards; i++) {
@@ -447,7 +608,19 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
                             // could not be taken due to partial being set to false.
                             shardSnapshotStatus = IndexShardSnapshotStatus.newFailed("skipped");
                         } else {
-                            shardSnapshotStatus = repository.getShardSnapshotStatus(snapshotInfo.snapshotId(), indexId, shardId);
+                            if (isRemoteStoreEnabledCluster
+                                && hasV2ClusterSetting
+                                && snapshotInfoPinnedTimestamp > 0
+                                && requestedIndexNames.isEmpty()) {
+                                logger.info(
+                                    "*** overriding shard level s3 calls for done shard = {} and snapshot = {} ",
+                                    shardId.toString(),
+                                    snapshotInfo.toString()
+                                );
+                                shardSnapshotStatus = IndexShardSnapshotStatus.newDone(0, 0, 0, 0, 0, 0, null);
+                            } else {
+                                shardSnapshotStatus = repository.getShardSnapshotStatus(snapshotInfo.snapshotId(), entry.getKey(), shardId);
+                            }
                         }
                         shardStatus.put(shardId, shardSnapshotStatus);
                     }
