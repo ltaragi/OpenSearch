@@ -40,6 +40,7 @@ import org.opensearch.action.LatchedActionListener;
 import org.opensearch.action.admin.cluster.node.stats.NodeStats;
 import org.opensearch.action.admin.cluster.node.stats.NodesStatsRequest;
 import org.opensearch.action.admin.cluster.node.stats.NodesStatsResponse;
+import org.opensearch.action.admin.indices.stats.IndexStats;
 import org.opensearch.action.admin.indices.stats.IndicesStatsRequest;
 import org.opensearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.opensearch.action.admin.indices.stats.ShardStats;
@@ -115,6 +116,9 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
     private volatile Map<String, FileCacheStats> nodeFileCacheStats;
     private volatile IndicesStatsSummary indicesStatsSummary;
     // null if this node is not currently the cluster-manager
+
+    private volatile long primaryStoreSize;
+
     private final AtomicReference<RefreshAndRescheduleRunnable> refreshAndRescheduleRunnable = new AtomicReference<>();
     private volatile boolean enabled;
     private volatile TimeValue fetchTimeout;
@@ -127,6 +131,7 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
         this.mostAvailableSpaceUsages = Map.of();
         this.nodeFileCacheStats = Map.of();
         this.indicesStatsSummary = IndicesStatsSummary.EMPTY;
+        this.primaryStoreSize = 0L;
         this.threadPool = threadPool;
         this.client = client;
         this.updateFrequency = INTERNAL_CLUSTER_INFO_UPDATE_INTERVAL_SETTING.get(settings);
@@ -213,7 +218,8 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
             indicesStatsSummary.shardSizes,
             indicesStatsSummary.shardRoutingToDataPath,
             indicesStatsSummary.reservedSpace,
-            nodeFileCacheStats
+            nodeFileCacheStats,
+            primaryStoreSize
         );
     }
 
@@ -301,15 +307,29 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
         final CountDownLatch indicesLatch = updateIndicesStats(new ActionListener<>() {
             @Override
             public void onResponse(IndicesStatsResponse indicesStatsResponse) {
+                long currentPrimaryStoreSize = indicesStatsResponse.getPrimaries().getStore().sizeInBytes();
+                Map<String, IndexStats> indexStatsMap = indicesStatsResponse.getIndices();
+                logger.info("### currentPrimaryStoreSize = {}", currentPrimaryStoreSize);
+                logger.info("### indexStatsMap = ");
+                for (Map.Entry<String, IndexStats> entry : indexStatsMap.entrySet()) {
+                    logger.info("   ### {} : {}", entry.getKey(), entry.getValue().getPrimaries().getStore().sizeInBytes());
+                }
                 final ShardStats[] stats = indicesStatsResponse.getShards();
                 final Map<String, Long> shardSizeByIdentifierBuilder = new HashMap<>();
+                final Map<String, Long> indexSizeByIdentifierBuilder = new HashMap<>();
                 final Map<ShardRouting, String> dataPathByShardRoutingBuilder = new HashMap<>();
                 final Map<ClusterInfo.NodeAndPath, ClusterInfo.ReservedSpace.Builder> reservedSpaceBuilders = new HashMap<>();
-                buildShardLevelInfo(logger, stats, shardSizeByIdentifierBuilder, dataPathByShardRoutingBuilder, reservedSpaceBuilders);
-
+                currentPrimaryStoreSize = buildShardLevelInfo(
+                    logger,
+                    stats,
+                    shardSizeByIdentifierBuilder,
+                    dataPathByShardRoutingBuilder,
+                    reservedSpaceBuilders
+                );
+                primaryStoreSize = currentPrimaryStoreSize;
                 final Map<ClusterInfo.NodeAndPath, ClusterInfo.ReservedSpace> rsrvdSpace = new HashMap<>();
                 reservedSpaceBuilders.forEach((nodeAndPath, builder) -> rsrvdSpace.put(nodeAndPath, builder.build()));
-
+                logger.info("### after buildShardLevelInfo - currentPrimaryStoreSize = {}", currentPrimaryStoreSize);
                 indicesStatsSummary = new IndicesStatsSummary(shardSizeByIdentifierBuilder, dataPathByShardRoutingBuilder, rsrvdSpace);
             }
 
@@ -366,13 +386,14 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
         listeners.add(clusterInfoConsumer);
     }
 
-    static void buildShardLevelInfo(
+    static long buildShardLevelInfo(
         Logger logger,
         ShardStats[] stats,
         final Map<String, Long> shardSizes,
         final Map<ShardRouting, String> newShardRoutingToDataPath,
         final Map<ClusterInfo.NodeAndPath, ClusterInfo.ReservedSpace.Builder> reservedSpaceByShard
     ) {
+        long currentPrimaryStoreSize = 0L;
         for (ShardStats s : stats) {
             final ShardRouting shardRouting = s.getShardRouting();
             newShardRoutingToDataPath.put(shardRouting, s.getDataPath());
@@ -381,7 +402,11 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
             if (storeStats == null) {
                 continue;
             }
+            // TODO: put entries for index name, size
             final long size = storeStats.sizeInBytes();
+            if (shardRouting.primary()) {
+                currentPrimaryStoreSize += size;
+            }
             final long reserved = storeStats.getReservedSize().getBytes();
 
             final String shardIdentifier = ClusterInfo.shardIdentifierFromRouting(shardRouting);
@@ -396,6 +421,7 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
                 reservedSpaceBuilder.add(shardRouting.shardId(), reserved);
             }
         }
+        return currentPrimaryStoreSize;
     }
 
     static void fillDiskUsagePerNode(

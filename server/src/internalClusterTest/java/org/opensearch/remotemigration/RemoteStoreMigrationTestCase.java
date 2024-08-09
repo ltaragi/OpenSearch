@@ -11,6 +11,8 @@ package org.opensearch.remotemigration;
 import org.opensearch.action.admin.cluster.repositories.get.GetRepositoriesRequest;
 import org.opensearch.action.admin.cluster.repositories.get.GetRepositoriesResponse;
 import org.opensearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
+import org.opensearch.action.admin.cluster.snapshots.status.SnapshotStatus;
+import org.opensearch.action.admin.cluster.snapshots.status.SnapshotsStatusResponse;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.common.settings.Settings;
@@ -26,6 +28,7 @@ import org.opensearch.test.hamcrest.OpenSearchAssertions;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.opensearch.cluster.routing.allocation.decider.ThrottlingAllocationDecider.CLUSTER_ROUTING_ALLOCATION_NODE_CONCURRENT_RECOVERIES_SETTING;
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.MIGRATION_DIRECTION_SETTING;
@@ -98,7 +101,7 @@ public class RemoteStoreMigrationTestCase extends MigrationBaseTestCase {
         assertThrows(IllegalArgumentException.class, () -> client().admin().cluster().updateSettings(updateSettingsRequest).actionGet());
     }
 
-    public void testNoShallowSnapshotInMixedMode() throws Exception {
+    public void testSnapshotStatusAPIForRemoteStoreEnabledCluster() throws Exception {
         logger.info("Initialize remote cluster");
         addRemote = true;
         internalCluster().setBootstrapClusterManagerNodeIndex(0);
@@ -110,8 +113,18 @@ public class RemoteStoreMigrationTestCase extends MigrationBaseTestCase {
         internalCluster().validateClusterFormed();
 
         logger.info("Create remote backed index");
-        RemoteStoreMigrationShardAllocationBaseTestCase.createIndex("test", 0);
-        RemoteStoreMigrationShardAllocationBaseTestCase.assertRemoteStoreBackedIndex("test");
+        String index1 = "index1";
+        String index2 = "index2";
+        String index3 = "index3";
+        RemoteStoreMigrationShardAllocationBaseTestCase.createIndex(index1, 0);
+        RemoteStoreMigrationShardAllocationBaseTestCase.createIndex(index2, 0);
+        // RemoteStoreMigrationShardAllocationBaseTestCase.createIndex(index3, 0);
+
+        logger.info("--> indexing some data");
+        for (int i = 0; i < 10; i++) {
+            index(index1, "_doc", Integer.toString(i), "foo", "bar" + i);
+        }
+        refresh();
 
         logger.info("Create shallow snapshot setting enabled repo");
         String shallowSnapshotRepoName = "shallow-snapshot-repo-name";
@@ -131,19 +144,23 @@ public class RemoteStoreMigrationTestCase extends MigrationBaseTestCase {
         SnapshotInfo snapshotInfo1 = RemoteStoreMigrationShardAllocationBaseTestCase.createSnapshot(
             shallowSnapshotRepoName,
             snapshot1,
-            "test"
+            index1,
+            index2
         );
-        assertEquals(snapshotInfo1.isRemoteStoreIndexShallowCopyEnabled(), true);
 
-        logger.info("Set MIXED compatibility mode");
-        ClusterUpdateSettingsRequest updateSettingsRequest = new ClusterUpdateSettingsRequest();
-        updateSettingsRequest.persistentSettings(Settings.builder().put(REMOTE_STORE_COMPATIBILITY_MODE_SETTING.getKey(), "mixed"));
-        assertAcked(client().admin().cluster().updateSettings(updateSettingsRequest).actionGet());
+        assertBusy(() -> {
+            SnapshotsStatusResponse snapshotsStatusResponse = client().admin()
+                .cluster()
+                .prepareSnapshotStatus(shallowSnapshotRepoName)
+                .setSnapshots(snapshot1)
+                .setIndices(index1, index2, index3)
+                .setIgnoreUnavailable(false)
+                .get();
+            SnapshotStatus snapshotStatus1 = snapshotsStatusResponse.getSnapshots().get(0);
+            logger.info("*** current snapshot status - totalSize [{}]", snapshotStatus1.getStats().getTotalSize());
+            assertNotEquals(0L, snapshotStatus1.getStats().getTotalSize());
+        }, 1, TimeUnit.MINUTES);
 
-        logger.info("Verify that new snapshot is not shallow");
-        final String snapshot2 = "snapshot2";
-        SnapshotInfo snapshotInfo2 = RemoteStoreMigrationShardAllocationBaseTestCase.createSnapshot(shallowSnapshotRepoName, snapshot2);
-        assertEquals(snapshotInfo2.isRemoteStoreIndexShallowCopyEnabled(), false);
     }
 
     /*

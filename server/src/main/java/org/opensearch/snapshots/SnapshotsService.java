@@ -46,6 +46,7 @@ import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.GroupedActionListener;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.cluster.ClusterChangedEvent;
+import org.opensearch.cluster.ClusterInfoService;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateApplier;
 import org.opensearch.cluster.ClusterStateTaskConfig;
@@ -158,6 +159,8 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
 
     private final RepositoriesService repositoriesService;
 
+    private final ClusterInfoService clusterInfoService;
+
     private final RemoteStoreLockManagerFactory remoteStoreLockManagerFactory;
 
     private final ThreadPool threadPool;
@@ -203,6 +206,15 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         Setting.Property.Dynamic
     );
 
+    // TODO: discuss values and name to be used here
+    public static final Setting<Integer> MAX_SHARDS_ALLOWED_IN_STATUS_API = Setting.intSetting(
+        "snapshot.max_shards_allowed_in_status_api",
+        1000,
+        1,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     public static final Setting<Boolean> SHALLOW_SNAPSHOT_V2 = Setting.boolSetting(
         "snapshot.shallow_snapshot_v2",
         false,
@@ -211,6 +223,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
     );
 
     private volatile int maxConcurrentOperations;
+    // private volatile int dummyMaxShardsAllowedInStatusApi;
 
     private volatile boolean isShallowSnapV2;
 
@@ -220,6 +233,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         IndexNameExpressionResolver indexNameExpressionResolver,
         RepositoriesService repositoriesService,
         TransportService transportService,
+        ClusterInfoService clusterInfoService,
         ActionFilters actionFilters,
         @Nullable RemoteStorePinnedTimestampService remoteStorePinnedTimestampService
     ) {
@@ -229,6 +243,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         this.remoteStoreLockManagerFactory = new RemoteStoreLockManagerFactory(() -> repositoriesService);
         this.threadPool = transportService.getThreadPool();
         this.transportService = transportService;
+        this.clusterInfoService = clusterInfoService;
         this.remoteStorePinnedTimestampService = remoteStorePinnedTimestampService;
 
         // The constructor of UpdateSnapshotStatusAction will register itself to the TransportService.
@@ -447,6 +462,8 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
     }
 
     public void createShallowSnapshotV2(final CreateSnapshotRequest request, final ActionListener<SnapshotInfo> listener) {
+        logger.info("*** storeSize from clusterInfoService = {}", clusterInfoService.getClusterInfo().getPrimaryStoreSize());
+        long snapshotSizeInBytes = clusterInfoService.getClusterInfo().getPrimaryStoreSize();
         long pinnedTimestamp = System.currentTimeMillis();
         final String repositoryName = request.repository();
         final String snapshotName = indexNameExpressionResolver.resolveDateMathExpression(request.snapshot());
@@ -530,7 +547,8 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                     request.includeGlobalState(),
                     userMeta,
                     remoteStoreIndexShallowCopy,
-                    pinnedTimestamp
+                    pinnedTimestamp,
+                    snapshotSizeInBytes
                 );
                 if (!clusterService.state().nodes().isLocalNodeElectedClusterManager()) {
                     throw new SnapshotException(repositoryName, snapshotName, "Aborting Snapshot, no longer cluster manager");
@@ -1710,6 +1728,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                 entry.includeGlobalState(),
                 entry.userMetadata(),
                 entry.remoteStoreIndexShallowCopy(),
+                0,
                 0
             );
             final StepListener<Metadata> metadataListener = new StepListener<>();

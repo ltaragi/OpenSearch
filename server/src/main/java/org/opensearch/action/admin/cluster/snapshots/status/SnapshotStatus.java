@@ -96,7 +96,7 @@ public class SnapshotStatus implements ToXContentObject, Writeable {
         includeGlobalState = in.readOptionalBoolean();
         final long startTime = in.readLong();
         final long time = in.readLong();
-        updateShardStats(startTime, time);
+        updateShardStats(startTime, time, 0L);
     }
 
     SnapshotStatus(
@@ -105,7 +105,8 @@ public class SnapshotStatus implements ToXContentObject, Writeable {
         List<SnapshotIndexShardStatus> shards,
         Boolean includeGlobalState,
         long startTime,
-        long time
+        long time,
+        long initialTotalSize
     ) {
         this.snapshot = Objects.requireNonNull(snapshot);
         this.state = Objects.requireNonNull(state);
@@ -113,7 +114,7 @@ public class SnapshotStatus implements ToXContentObject, Writeable {
         this.includeGlobalState = includeGlobalState;
         shardsStats = new SnapshotShardsStats(shards);
         assert time >= 0 : "time must be >= 0 but received [" + time + "]";
-        updateShardStats(startTime, time);
+        updateShardStats(startTime, time, initialTotalSize);
     }
 
     private SnapshotStatus(
@@ -299,8 +300,8 @@ public class SnapshotStatus implements ToXContentObject, Writeable {
         return PARSER.parse(parser, null);
     }
 
-    private void updateShardStats(long startTime, long time) {
-        stats = new SnapshotStats(startTime, time, 0, 0, 0, 0, 0, 0);
+    private void updateShardStats(long startTime, long time, long initialTotalSize) {
+        stats = new SnapshotStats(startTime, time, 0, 0, 0, 0, initialTotalSize, 0);
         shardsStats = new SnapshotShardsStats(shards);
         for (SnapshotIndexShardStatus shard : shards) {
             // BWC: only update timestamps when we did not get a start time from an old node

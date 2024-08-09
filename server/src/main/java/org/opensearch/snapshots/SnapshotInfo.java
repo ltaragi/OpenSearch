@@ -100,6 +100,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     private static final String REMOTE_STORE_INDEX_SHALLOW_COPY = "remote_store_index_shallow_copy";
 
     private static final String PINNED_TIMESTAMP = "pinned_timestamp";
+
+    private static final String SNAPSHOT_SIZE_IN_BYTES = "snapshot_size_in_bytes";
     private static final String USER_METADATA = "metadata";
 
     private static final Comparator<SnapshotInfo> COMPARATOR = Comparator.comparing(SnapshotInfo::startTime)
@@ -126,6 +128,9 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
 
         private Boolean remoteStoreIndexShallowCopy = null;
         private long pinnedTimestamp = 0L;
+
+        private long snapshotSizeInBytes = 0L;
+
         private Map<String, Object> userMetadata = null;
         private int version = -1;
         private List<SnapshotShardFailure> shardFailures = null;
@@ -186,6 +191,10 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             this.pinnedTimestamp = pinnedTimestamp;
         }
 
+        private void setSnapshotSizeInBytes(long snapshotSizeInBytes) {
+            this.snapshotSizeInBytes = snapshotSizeInBytes;
+        }
+
         private void setShardFailures(List<SnapshotShardFailure> shardFailures) {
             this.shardFailures = shardFailures;
         }
@@ -226,7 +235,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
                 includeGlobalState,
                 userMetadata,
                 remoteStoreIndexShallowCopy,
-                pinnedTimestamp
+                pinnedTimestamp,
+                snapshotSizeInBytes
             );
         }
     }
@@ -282,6 +292,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             new ParseField(REMOTE_STORE_INDEX_SHALLOW_COPY)
         );
         SNAPSHOT_INFO_PARSER.declareLong(SnapshotInfoBuilder::setPinnedTimestamp, new ParseField(PINNED_TIMESTAMP));
+        SNAPSHOT_INFO_PARSER.declareLong(SnapshotInfoBuilder::setSnapshotSizeInBytes, new ParseField(SNAPSHOT_SIZE_IN_BYTES));
         SNAPSHOT_INFO_PARSER.declareObjectArray(
             SnapshotInfoBuilder::setShardFailures,
             SnapshotShardFailure.SNAPSHOT_SHARD_FAILURE_PARSER,
@@ -319,6 +330,9 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     private Boolean remoteStoreIndexShallowCopy;
 
     private long pinnedTimestamp;
+
+    private long snapshotSizeInBytes;
+
     @Nullable
     private final Map<String, Object> userMetadata;
 
@@ -328,11 +342,11 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     private final List<SnapshotShardFailure> shardFailures;
 
     public SnapshotInfo(SnapshotId snapshotId, List<String> indices, List<String> dataStreams, SnapshotState state) {
-        this(snapshotId, indices, dataStreams, state, null, null, 0L, 0L, 0, 0, Collections.emptyList(), null, null, null, 0);
+        this(snapshotId, indices, dataStreams, state, null, null, 0L, 0L, 0, 0, Collections.emptyList(), null, null, null, 0, 0);
     }
 
     public SnapshotInfo(SnapshotId snapshotId, List<String> indices, List<String> dataStreams, SnapshotState state, Version version) {
-        this(snapshotId, indices, dataStreams, state, null, version, 0L, 0L, 0, 0, Collections.emptyList(), null, null, null, 0);
+        this(snapshotId, indices, dataStreams, state, null, version, 0L, 0L, 0, 0, Collections.emptyList(), null, null, null, 0, 0);
     }
 
     public SnapshotInfo(SnapshotsInProgress.Entry entry) {
@@ -351,6 +365,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             entry.includeGlobalState(),
             entry.userMetadata(),
             entry.remoteStoreIndexShallowCopy(),
+            0L,
             0L
         );
     }
@@ -367,7 +382,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         Boolean includeGlobalState,
         Map<String, Object> userMetadata,
         Boolean remoteStoreIndexShallowCopy,
-        long pinnedTimestamp
+        long pinnedTimestamp,
+        long snapshotSizeInBytes
     ) {
         this(
             snapshotId,
@@ -384,7 +400,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             includeGlobalState,
             userMetadata,
             remoteStoreIndexShallowCopy,
-            pinnedTimestamp
+            pinnedTimestamp,
+            snapshotSizeInBytes
         );
     }
 
@@ -403,7 +420,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         Boolean includeGlobalState,
         Map<String, Object> userMetadata,
         Boolean remoteStoreIndexShallowCopy,
-        long pinnedTimestamp
+        long pinnedTimestamp,
+        long snapshotSizeInBytes
     ) {
         this.snapshotId = Objects.requireNonNull(snapshotId);
         this.indices = Collections.unmodifiableList(Objects.requireNonNull(indices));
@@ -420,6 +438,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         this.userMetadata = userMetadata;
         this.remoteStoreIndexShallowCopy = remoteStoreIndexShallowCopy;
         this.pinnedTimestamp = pinnedTimestamp;
+        this.snapshotSizeInBytes = snapshotSizeInBytes;
     }
 
     /**
@@ -444,6 +463,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         }
         if (in.getVersion().onOrAfter(Version.V_2_17_0)) {
             pinnedTimestamp = in.readVLong();
+            snapshotSizeInBytes = in.readVLong();
         }
     }
 
@@ -563,6 +583,10 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         return pinnedTimestamp;
     }
 
+    public long getSnapshotSizeInBytes() {
+        return snapshotSizeInBytes;
+    }
+
     /**
      * Returns shard failures; an empty list will be returned if there were no shard
      * failures, or if {@link #state()} returns {@code null}.
@@ -632,6 +656,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             + remoteStoreIndexShallowCopy
             + ", pinnedTimestamp="
             + pinnedTimestamp
+            + ", snapshotSizeInBytes="
+            + snapshotSizeInBytes
             + '}';
     }
 
@@ -668,6 +694,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             builder.field(REMOTE_STORE_INDEX_SHALLOW_COPY, remoteStoreIndexShallowCopy);
         }
         builder.field(PINNED_TIMESTAMP, pinnedTimestamp);
+        builder.field(SNAPSHOT_SIZE_IN_BYTES, snapshotSizeInBytes);
 
         builder.startArray(INDICES);
         for (String index : indices) {
@@ -730,6 +757,9 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         if (pinnedTimestamp != 0) {
             builder.field(PINNED_TIMESTAMP, pinnedTimestamp);
         }
+        if (snapshotSizeInBytes != 0) {
+            builder.field(SNAPSHOT_SIZE_IN_BYTES, snapshotSizeInBytes);
+        }
         builder.startArray(INDICES);
         for (String index : indices) {
             builder.value(index);
@@ -779,6 +809,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         int totalShards = 0;
         int successfulShards = 0;
         long pinnedTimestamp = 0;
+        long snapshotSizeInBytes = 0;
         Boolean includeGlobalState = null;
         Boolean remoteStoreIndexShallowCopy = null;
         Map<String, Object> userMetadata = null;
@@ -822,6 +853,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
                             remoteStoreIndexShallowCopy = parser.booleanValue();
                         } else if (PINNED_TIMESTAMP.equals(currentFieldName)) {
                             pinnedTimestamp = parser.longValue();
+                        } else if (SNAPSHOT_SIZE_IN_BYTES.equals(currentFieldName)) {
+                            snapshotSizeInBytes = parser.longValue();
                         }
                     } else if (token == XContentParser.Token.START_ARRAY) {
                         if (DATA_STREAMS.equals(currentFieldName)) {
@@ -875,7 +908,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             includeGlobalState,
             userMetadata,
             remoteStoreIndexShallowCopy,
-            pinnedTimestamp
+            pinnedTimestamp,
+            snapshotSizeInBytes
         );
     }
 
@@ -909,6 +943,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         }
         if (out.getVersion().onOrAfter(Version.V_2_17_0)) {
             out.writeVLong(pinnedTimestamp);
+            out.writeVLong(snapshotSizeInBytes);
         }
     }
 
@@ -943,7 +978,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             && Objects.equals(shardFailures, that.shardFailures)
             && Objects.equals(userMetadata, that.userMetadata)
             && Objects.equals(remoteStoreIndexShallowCopy, that.remoteStoreIndexShallowCopy)
-            && Objects.equals(pinnedTimestamp, that.pinnedTimestamp);
+            && Objects.equals(pinnedTimestamp, that.pinnedTimestamp)
+            && Objects.equals(snapshotSizeInBytes, that.snapshotSizeInBytes);
     }
 
     @Override
@@ -964,7 +1000,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
             shardFailures,
             userMetadata,
             remoteStoreIndexShallowCopy,
-            pinnedTimestamp
+            pinnedTimestamp,
+            snapshotSizeInBytes
         );
     }
 }
