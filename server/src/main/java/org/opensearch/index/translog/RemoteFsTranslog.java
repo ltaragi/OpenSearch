@@ -646,13 +646,13 @@ public class RemoteFsTranslog extends Translog {
 
                     // 4. we need to keep files since last successful run of scheduler
                     long lastSuccessfulFetchOfPinnedTimestamps = pinnedTimestampsState.v1();
-                    long minimumAgeInMillis = lastSuccessfulFetchOfPinnedTimestamps + RemoteStoreSettings
+                    long maximumAllowedTimestamp = lastSuccessfulFetchOfPinnedTimestamps - RemoteStoreSettings
                         .getPinnedTimestampsLookbackInterval()
                         .getMillis();
                     List<String> metadataFilesToBeDeleted = RemoteStoreUtils.filterOutMetadataFilesBasedOnAge(
                         metadataFiles,
                         file -> RemoteStoreUtils.invertLong(file.split(METADATA_SEPARATOR)[3]),
-                        TimeValue.timeValueMillis(minimumAgeInMillis)
+                        maximumAllowedTimestamp
                     );
 
                     logger.warn("Metadata files to be deleted after filtering based on age: {}", metadataFilesToBeDeleted.size());

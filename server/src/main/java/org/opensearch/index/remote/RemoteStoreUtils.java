@@ -501,13 +501,12 @@ public class RemoteStoreUtils {
     public static List<String> filterOutMetadataFilesBasedOnAge(
         List<String> metadataFiles,
         Function<String, Long> getTimestampFunction,
-        TimeValue minimumAge
+        long maximumAllowedTimestamp
     ) {
-        long maxTimestampAllowed = System.currentTimeMillis() - minimumAge.getMillis();
         List<String> metadataFilesWithMinAge = new ArrayList<>();
         for (String metadataFileName : metadataFiles) {
             long metadataTimestamp = getTimestampFunction.apply(metadataFileName);
-            if (metadataTimestamp < maxTimestampAllowed) {
+            if (metadataTimestamp < maximumAllowedTimestamp) {
                 metadataFilesWithMinAge.add(metadataFileName);
             }
         }

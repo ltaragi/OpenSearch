@@ -862,12 +862,12 @@ public final class RemoteSegmentStoreDirectory extends FilterDirectory implement
 
         // Along with last N files, we need to keep files since last successful run of scheduler
         long lastSuccessfulFetchOfPinnedTimestamps = pinnedTimestampsState.v1();
-        long minimumAgeInMillis = lastSuccessfulFetchOfPinnedTimestamps + RemoteStoreSettings.getPinnedTimestampsLookbackInterval()
+        long maximumAllowedTimestamp = lastSuccessfulFetchOfPinnedTimestamps - RemoteStoreSettings.getPinnedTimestampsLookbackInterval()
             .getMillis();
         metadataFilesEligibleToDelete = RemoteStoreUtils.filterOutMetadataFilesBasedOnAge(
             metadataFilesEligibleToDelete,
             MetadataFilenameUtils::getTimestamp,
-            TimeValue.timeValueMillis(minimumAgeInMillis)
+            maximumAllowedTimestamp
         );
 
         List<String> metadataFilesToBeDeleted = metadataFilesEligibleToDelete.stream()
