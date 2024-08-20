@@ -2479,6 +2479,10 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
      * Operations from the translog will be replayed to bring lucene up to date.
      **/
     public void openEngineAndRecoverFromTranslog() throws IOException {
+        openEngineAndRecoverFromTranslog(true);
+    }
+
+    public void openEngineAndRecoverFromTranslog(boolean syncFromRemote) throws IOException {
         recoveryState.validateCurrentStage(RecoveryState.Stage.INDEX);
         maybeCheckIndex();
         recoveryState.setStage(RecoveryState.Stage.TRANSLOG);
@@ -2499,7 +2503,16 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             loadGlobalCheckpointToReplicationTracker();
         }
 
-        innerOpenEngineAndTranslog(replicationTracker);
+        if (isSnapshotV2Restore()) {
+            translogConfig.setPinnedTimestamp(((SnapshotRecoverySource)routingEntry().recoverySource()).getPinnedTimestamp());
+        }
+
+        innerOpenEngineAndTranslog(replicationTracker, syncFromRemote);
+
+        if (isSnapshotV2Restore()) {
+            translogConfig.setPinnedTimestamp(-1);
+        }
+
         getEngine().translogManager()
             .recoverFromTranslog(translogRecoveryRunner, getEngine().getProcessedLocalCheckpoint(), Long.MAX_VALUE);
     }
@@ -2561,7 +2574,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 if (shardRouting.primary()) {
                     if (syncFromRemote) {
                         syncRemoteTranslogAndUpdateGlobalCheckpoint();
-                    } else {
+                    } else if (isSnapshotV2Restore() == false){
                         // we will enter this block when we do not want to recover from remote translog.
                         // currently only during snapshot restore, we are coming into this block.
                         // here, as while initiliazing remote translog we cannot skip downloading translog files,
@@ -2605,6 +2618,10 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         onSettingsChanged();
         assert assertSequenceNumbersInCommit();
         recoveryState.validateCurrentStage(RecoveryState.Stage.TRANSLOG);
+    }
+
+    private boolean isSnapshotV2Restore() {
+        return routingEntry().recoverySource().getType() == RecoverySource.Type.SNAPSHOT && ((SnapshotRecoverySource)routingEntry().recoverySource()).getPinnedTimestamp() > 0;
     }
 
     private boolean assertSequenceNumbersInCommit() throws IOException {
@@ -2893,7 +2910,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 + recoveryState.getRecoverySource();
             StoreRecovery storeRecovery = new StoreRecovery(shardId, logger);
             SnapshotRecoverySource recoverySource = (SnapshotRecoverySource) recoveryState().getRecoverySource();
-            if (recoverySource.getPinnedTimestamp() > 0) {
+            if (recoverySource.getPinnedTimestamp() > -1) {
                 storeRecovery.recoverShallowSnapshotV2(this, repository, repositoriesService, listener, threadPool);
             } else {
                 storeRecovery.recoverFromSnapshotAndRemoteStore(this, repository, repositoriesService, listener, threadPool);
@@ -5002,6 +5019,10 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     }
 
     public void syncTranslogFilesFromRemoteTranslog() throws IOException {
+        syncTranslogFilesFromRemoteTranslog(-1);
+    }
+
+    public void syncTranslogFilesFromRemoteTranslog(long timestamp) throws IOException {
         TranslogFactory translogFactory = translogFactorySupplier.apply(indexSettings, shardRouting);
         assert translogFactory instanceof RemoteBlobStoreInternalTranslogFactory;
         Repository repository = ((RemoteBlobStoreInternalTranslogFactory) translogFactory).getRepository();
@@ -5014,7 +5035,8 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             remoteStoreSettings,
             logger,
             shouldSeedRemoteStore(),
-            indexSettings().isTranslogMetadataEnabled()
+            indexSettings().isTranslogMetadataEnabled(),
+            timestamp
         );
     }
 
@@ -5103,15 +5125,13 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
      * Downloads segments from given remote segment store for a specific commit.
      * @param overrideLocal flag to override local segment files with those in remote store
      * @param sourceRemoteDirectory RemoteSegmentDirectory Instance from which we need to sync segments
-     * @param primaryTerm Primary Term for shard at the time of commit operation for which we are syncing segments
-     * @param commitGeneration commit generation at the time of commit operation for which we are syncing segments
      * @throws IOException if exception occurs while reading segments from remote store
      */
     public void syncSegmentsFromGivenRemoteSegmentStore(
         boolean overrideLocal,
         RemoteSegmentStoreDirectory sourceRemoteDirectory,
-        long primaryTerm,
-        long commitGeneration
+        RemoteSegmentMetadata remoteSegmentMetadata,
+        boolean pinnedTimestamp
     ) throws IOException {
         logger.trace("Downloading segments from given remote segment store");
         RemoteSegmentStoreDirectory remoteDirectory = null;
@@ -5134,12 +5154,30 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 overrideLocal,
                 () -> {}
             );
-            if (segmentsNFile != null) {
+            if (pinnedTimestamp) {
+                final SegmentInfos infosSnapshot = store.buildSegmentInfos(
+                    remoteSegmentMetadata.getSegmentInfosBytes(),
+                    remoteSegmentMetadata.getGeneration()
+                );
+                long processedLocalCheckpoint = Long.parseLong(infosSnapshot.getUserData().get(LOCAL_CHECKPOINT_KEY));
+                // delete any other commits, we want to start the engine only from a new commit made with the downloaded infos bytes.
+                // Extra segments will be wiped on engine open.
+                for (String file : List.of(store.directory().listAll())) {
+                    if (file.startsWith(IndexFileNames.SEGMENTS)) {
+                        store.deleteQuiet(file);
+                    }
+                }
+                assert Arrays.stream(store.directory().listAll()).filter(f -> f.startsWith(IndexFileNames.SEGMENTS)).findAny().isEmpty()
+                    : "There should not be any segments file in the dir";
+                store.commitSegmentInfos(infosSnapshot, processedLocalCheckpoint, processedLocalCheckpoint);
+            }
+            else if (segmentsNFile != null) {
                 try (
                     ChecksumIndexInput indexInput = new BufferedChecksumIndexInput(
                         storeDirectory.openInput(segmentsNFile, IOContext.DEFAULT)
                     )
                 ) {
+                    long commitGeneration = SegmentInfos.generationFromSegmentsFileName(segmentsNFile);
                     SegmentInfos infosSnapshot = SegmentInfos.readCommit(store.directory(), indexInput, commitGeneration);
                     long processedLocalCheckpoint = Long.parseLong(infosSnapshot.getUserData().get(LOCAL_CHECKPOINT_KEY));
                     if (remoteStore != null) {

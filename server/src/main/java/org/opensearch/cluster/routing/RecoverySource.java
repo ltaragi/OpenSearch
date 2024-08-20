@@ -267,7 +267,7 @@ public abstract class RecoverySource implements Writeable, ToXContentObject {
         private final boolean remoteStoreIndexShallowCopy;
         private final String sourceRemoteStoreRepository;
 
-        private long pinnedTimestamp = 0L;
+        private final long pinnedTimestamp;
 
         public SnapshotRecoverySource(String restoreUUID, Snapshot snapshot, Version version, IndexId indexId) {
             this(restoreUUID, snapshot, version, indexId, false, false, null, 0L);
@@ -293,7 +293,7 @@ public abstract class RecoverySource implements Writeable, ToXContentObject {
             this.isSearchableSnapshot = isSearchableSnapshot;
             this.remoteStoreIndexShallowCopy = remoteStoreIndexShallowCopy;
             this.sourceRemoteStoreRepository = sourceRemoteStoreRepository;
-            this.pinnedTimestamp = 0;
+            this.pinnedTimestamp = -1;
         }
 
         public SnapshotRecoverySource(
@@ -336,7 +336,7 @@ public abstract class RecoverySource implements Writeable, ToXContentObject {
             if (in.getVersion().onOrAfter(V_2_17_0)) {
                 pinnedTimestamp = in.readLong();
             } else {
-                pinnedTimestamp = 0L;
+                pinnedTimestamp = -1L;
             }
         }
 

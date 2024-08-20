@@ -65,6 +65,7 @@ import org.opensearch.index.snapshots.blobstore.RemoteStoreShardShallowCopySnaps
 import org.opensearch.index.store.RemoteSegmentStoreDirectory;
 import org.opensearch.index.store.RemoteSegmentStoreDirectoryFactory;
 import org.opensearch.index.store.Store;
+import org.opensearch.index.store.remote.metadata.RemoteSegmentMetadata;
 import org.opensearch.index.translog.Checkpoint;
 import org.opensearch.index.translog.Translog;
 import org.opensearch.index.translog.TranslogHeader;
@@ -407,12 +408,12 @@ final class StoreRecovery {
                     shardId,
                     shallowCopyShardMetadata.getRemoteStorePathStrategy()
                 );
-                sourceRemoteDirectory.initializeToSpecificCommit(
+                RemoteSegmentMetadata remoteSegmentMetadata = sourceRemoteDirectory.initializeToSpecificCommit(
                     primaryTerm,
                     commitGeneration,
                     recoverySource.snapshot().getSnapshotId().getUUID()
                 );
-                indexShard.syncSegmentsFromGivenRemoteSegmentStore(true, sourceRemoteDirectory, primaryTerm, commitGeneration);
+                indexShard.syncSegmentsFromGivenRemoteSegmentStore(true, sourceRemoteDirectory, remoteSegmentMetadata, false);
                 final Store store = indexShard.store();
                 if (indexShard.indexSettings.isRemoteTranslogStoreEnabled() == false) {
                     bootstrap(indexShard, store);
@@ -458,7 +459,7 @@ final class StoreRecovery {
                 SnapshotRecoverySource recoverySource = (SnapshotRecoverySource) indexShard.recoveryState().getRecoverySource();
                 indexShard.prepareForIndexRecovery();
 
-                assert recoverySource.getPinnedTimestamp() > 0;
+                assert recoverySource.getPinnedTimestamp() > -1;
                 final StepListener<RepositoryData> repositoryDataListener = new StepListener<>();
                 repository.getRepositoryData(repositoryDataListener);
                 repositoryDataListener.whenComplete(repositoryData -> {
@@ -479,15 +480,21 @@ final class StoreRecovery {
                             shardId,
                             RemoteStoreUtils.determineRemoteStorePathStrategy(prevIndexMetadata)
                         );
-                        // ToDo : Use segments and translog from pinned timestamp
-                        indexShard.syncSegmentsFromGivenRemoteSegmentStore(true, sourceRemoteDirectory, 0, 1);
-                        indexShard.syncTranslogFilesFromRemoteTranslog();
+                        RemoteSegmentMetadata remoteSegmentMetadata = sourceRemoteDirectory.initializeToSpecificTimestamp(recoverySource.getPinnedTimestamp());
+
+                        indexShard.syncSegmentsFromGivenRemoteSegmentStore(true, sourceRemoteDirectory, remoteSegmentMetadata, true);
+                        indexShard.syncTranslogFilesFromRemoteTranslog(recoverySource.getPinnedTimestamp());
+
                         assert indexShard.shardRouting.primary() : "only primary shards can recover from store";
+                        writeEmptyRetentionLeasesFile(indexShard);
                         indexShard.recoveryState().getIndex().setFileDetailsComplete();
-                        indexShard.openEngineAndRecoverFromTranslog();
+                        indexShard.openEngineAndRecoverFromTranslog(false);
                         indexShard.getEngine().fillSeqNoGaps(indexShard.getPendingPrimaryTerm());
                         indexShard.finalizeRecovery();
-                        indexShard.postRecovery("restore done");
+                        if (indexShard.isRemoteTranslogEnabled() && indexShard.shardRouting.primary()) {
+                            indexShard.waitForRemoteStoreSync();
+                        }
+                        indexShard.postRecovery("post recovery from remote_store");
                         listener.onResponse(true);
                     }
                     , listener::onFailure);

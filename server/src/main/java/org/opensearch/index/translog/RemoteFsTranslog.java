@@ -121,36 +121,6 @@ public class RemoteFsTranslog extends Translog {
         RemoteTranslogTransferTracker remoteTranslogTransferTracker,
         RemoteStoreSettings remoteStoreSettings
     ) throws IOException {
-        this(
-            config,
-            translogUUID,
-            deletionPolicy,
-            globalCheckpointSupplier,
-            primaryTermSupplier,
-            persistedSequenceNumberConsumer,
-            blobStoreRepository,
-            threadPool,
-            startedPrimarySupplier,
-            remoteTranslogTransferTracker,
-            remoteStoreSettings,
-            -1
-        );
-    }
-
-    public RemoteFsTranslog(
-        TranslogConfig config,
-        String translogUUID,
-        TranslogDeletionPolicy deletionPolicy,
-        LongSupplier globalCheckpointSupplier,
-        LongSupplier primaryTermSupplier,
-        LongConsumer persistedSequenceNumberConsumer,
-        BlobStoreRepository blobStoreRepository,
-        ThreadPool threadPool,
-        BooleanSupplier startedPrimarySupplier,
-        RemoteTranslogTransferTracker remoteTranslogTransferTracker,
-        RemoteStoreSettings remoteStoreSettings,
-        long timestamp
-    ) throws IOException {
         super(config, translogUUID, deletionPolicy, globalCheckpointSupplier, primaryTermSupplier, persistedSequenceNumberConsumer);
         logger = Loggers.getLogger(getClass(), shardId);
         this.startedPrimarySupplier = startedPrimarySupplier;
@@ -170,7 +140,7 @@ public class RemoteFsTranslog extends Translog {
             isTranslogMetadataEnabled
         );
         try {
-            download(translogTransferManager, location, logger, config.shouldSeedRemote(), timestamp);
+            download(translogTransferManager, location, logger, config.shouldSeedRemote(), config.getPinnedTimestamp());
             Checkpoint checkpoint = readCheckpoint(location);
             logger.info("Downloaded data from remote translog till maxSeqNo = {}", checkpoint.maxSeqNo);
             this.readers.addAll(recoverFromFiles(checkpoint));
