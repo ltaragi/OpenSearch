@@ -595,7 +595,7 @@ public class RemoteFsTranslog extends Translog {
 
         // This is to fail fast and avoid listing md files un-necessarily.
         if (RemoteStoreUtils.isPinnedTimestampStateStale()) {
-            logger.warn("Skipping remote segment store garbage collection as last fetch of pinned timestamp is stale");
+            logger.warn("Skipping remote translog garbage collection as last fetch of pinned timestamp is stale");
             return;
         }
 
@@ -603,12 +603,14 @@ public class RemoteFsTranslog extends Translog {
         // Remote generations involves 2 async operations - 1) Delete translog generation files 2) Delete metadata files
         // We try to acquire 2 permits and if we can not, we return from here itself.
         if (remoteGenerationDeletionPermits.tryAcquire(REMOTE_DELETION_PERMITS) == false) {
+            logger.warn("Skipping remote translog garbage collection as failed to acquire the permits");
             return;
         }
 
         ActionListener<List<BlobMetadata>> listMetadataFilesListener = new ActionListener<>() {
             @Override
             public void onResponse(List<BlobMetadata> blobMetadata) {
+                logger.warn("Metadata file size: " + blobMetadata.size());
                 List<String> metadataFiles = blobMetadata.stream().map(BlobMetadata::name).collect(Collectors.toList());
                 Set<Long> generationsToDelete = new HashSet<>();
                 try {
@@ -653,8 +655,12 @@ public class RemoteFsTranslog extends Translog {
                         TimeValue.timeValueMillis(minimumAgeInMillis)
                     );
 
+                    logger.warn("Metadata files to be deleted after filtering based on age: {}", metadataFilesToBeDeleted.size());
+
                     // 5. Filter out metadata files matching pinned timestamps
                     metadataFilesToBeDeleted.removeAll(implicitLockedFiles);
+
+                    logger.warn("Metadata files to be deleted after filtering md files matching pinned timestamps: {}", metadataFilesToBeDeleted.size());
 
                     if (metadataFilesToBeDeleted.isEmpty()) {
                         logger.debug("No metadata files to delete");
@@ -700,6 +706,7 @@ public class RemoteFsTranslog extends Translog {
                         }
                         generationsToDelete.add(generation);
                     }
+                    logger.warn("Generations to delete: {}", generationsToDelete.size());
                     if (generationsToDelete.isEmpty() == false) {
                         // 9. Delete stale generations
                         deleteRemoteGenerations(generationsToDelete);
@@ -732,6 +739,7 @@ public class RemoteFsTranslog extends Translog {
                 } catch (Exception e) {
                     remoteGenerationDeletionPermits.release(REMOTE_DELETION_PERMITS);
                 }
+                logger.warn("In trimUnreferencedReaders, onResponse completed");
             }
 
             @Override
