@@ -699,14 +699,23 @@ public class RemoteFsTranslog extends Translog {
                     for (long generation = maxGenerationToBeDeleted; generation >= minGenerationToBeDeleted; generation--) {
                         // 8. Check if the generation is not referred by metadata file matching pinned timestamps
                         Tuple<Long, Long> ceilingGenerationRange = pinnedGenerations.ceiling(new Tuple<>(generation, generation));
-                        if (ceilingGenerationRange != null
+                        Tuple<Long, Long> floorGenerationRange = pinnedGenerations.floor(new Tuple<>(generation, generation));
+                        if ((ceilingGenerationRange != null
                             && generation >= ceilingGenerationRange.v1()
-                            && generation <= ceilingGenerationRange.v2()) {
+                            && generation <= ceilingGenerationRange.v2())
+                            || (floorGenerationRange != null
+                            && generation >= floorGenerationRange.v1()
+                            && generation <= floorGenerationRange.v2())) {
                             continue;
                         }
+                        logger.warn("PinnedGenerations: {}", pinnedGenerations);
+                        logger.warn("CeilingGenerationRange: {}", ceilingGenerationRange);
+                        logger.warn("FloorGenerationRange: {}", floorGenerationRange);
+                        logger.warn("Generation: {}", generation);
                         generationsToDelete.add(generation);
                     }
-                    logger.warn("Generations to delete: {}", generationsToDelete.size());
+                    logger.warn("Number of generations to delete: {}", generationsToDelete.size());
+                    logger.warn("Generations to delete: {}", generationsToDelete);
                     if (generationsToDelete.isEmpty() == false) {
                         // 9. Delete stale generations
                         deleteRemoteGenerations(generationsToDelete);

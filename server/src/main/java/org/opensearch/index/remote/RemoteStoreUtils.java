@@ -495,7 +495,7 @@ public class RemoteStoreUtils {
      *
      * @param metadataFiles        List of metadata file names to filter.
      * @param getTimestampFunction Function to extract timestamp from a file name.
-     * @param minimumAge           Minimum age threshold for filtering.
+     * @param maximumAllowedTimestamp           Minimum age threshold for filtering.
      * @return A list of metadata file names that are older than the minimum age.
      */
     public static List<String> filterOutMetadataFilesBasedOnAge(
