@@ -307,16 +307,9 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
         final CountDownLatch indicesLatch = updateIndicesStats(new ActionListener<>() {
             @Override
             public void onResponse(IndicesStatsResponse indicesStatsResponse) {
-                long currentPrimaryStoreSize = indicesStatsResponse.getPrimaries().getStore().sizeInBytes();
-                Map<String, IndexStats> indexStatsMap = indicesStatsResponse.getIndices();
-                logger.info("### currentPrimaryStoreSize = {}", currentPrimaryStoreSize);
-                logger.info("### indexStatsMap = ");
-                for (Map.Entry<String, IndexStats> entry : indexStatsMap.entrySet()) {
-                    logger.info("   ### {} : {}", entry.getKey(), entry.getValue().getPrimaries().getStore().sizeInBytes());
-                }
+                long currentPrimaryStoreSize = 0L;
                 final ShardStats[] stats = indicesStatsResponse.getShards();
                 final Map<String, Long> shardSizeByIdentifierBuilder = new HashMap<>();
-                final Map<String, Long> indexSizeByIdentifierBuilder = new HashMap<>();
                 final Map<ShardRouting, String> dataPathByShardRoutingBuilder = new HashMap<>();
                 final Map<ClusterInfo.NodeAndPath, ClusterInfo.ReservedSpace.Builder> reservedSpaceBuilders = new HashMap<>();
                 currentPrimaryStoreSize = buildShardLevelInfo(
@@ -402,7 +395,7 @@ public class InternalClusterInfoService implements ClusterInfoService, ClusterSt
             if (storeStats == null) {
                 continue;
             }
-            // TODO: put entries for index name, size
+            // TODO: put entries for index name, size?
             final long size = storeStats.sizeInBytes();
             if (shardRouting.primary()) {
                 currentPrimaryStoreSize += size;
