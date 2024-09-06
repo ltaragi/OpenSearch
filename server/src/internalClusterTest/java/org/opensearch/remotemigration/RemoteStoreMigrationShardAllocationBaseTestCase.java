@@ -10,6 +10,7 @@ package org.opensearch.remotemigration;
 
 import org.opensearch.action.admin.cluster.allocation.ClusterAllocationExplanation;
 import org.opensearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
+import org.opensearch.action.admin.cluster.snapshots.create.CreateSnapshotResponse;
 import org.opensearch.action.admin.cluster.snapshots.restore.RestoreSnapshotResponse;
 import org.opensearch.action.support.ActiveShardCount;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -33,7 +34,10 @@ import org.opensearch.snapshots.SnapshotState;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.hamcrest.Matchers.is;
 import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY;
 import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE_ENABLED;
 import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_TRANSLOG_STORE_REPOSITORY;
@@ -276,19 +280,15 @@ public class RemoteStoreMigrationShardAllocationBaseTestCase extends MigrationBa
     }
 
     // create a snapshot
-    public static SnapshotInfo createSnapshot(String snapshotRepoName, String snapshotName, String... indices) {
-        SnapshotInfo snapshotInfo = internalCluster().client()
-            .admin()
+    public static SnapshotInfo createSnapshot(String snapshotRepoName, String snapshotName) {
+        final CreateSnapshotResponse response = client().admin()
             .cluster()
             .prepareCreateSnapshot(snapshotRepoName, snapshotName)
-            .setIndices(indices)
             .setWaitForCompletion(true)
-            .get()
-            .getSnapshotInfo();
-
-        assertEquals(SnapshotState.SUCCESS, snapshotInfo.state());
-        assertTrue(snapshotInfo.successfulShards() > 0);
-        assertEquals(0, snapshotInfo.failedShards());
+            .get();
+        final SnapshotInfo snapshotInfo = response.getSnapshotInfo();
+        assertThat(snapshotInfo.successfulShards(), is(snapshotInfo.totalShards()));
+        assertThat(snapshotInfo.state(), is(SnapshotState.SUCCESS));
         return snapshotInfo;
     }
 
@@ -310,18 +310,27 @@ public class RemoteStoreMigrationShardAllocationBaseTestCase extends MigrationBa
     }
 
     // restore indices from a snapshot
-    public static RestoreSnapshotResponse restoreSnapshot(String snapshotRepoName, String snapshotName, String restoredIndexName) {
-        RestoreSnapshotResponse restoreSnapshotResponse = internalCluster().client()
-            .admin()
-            .cluster()
-            .prepareRestoreSnapshot(snapshotRepoName, snapshotName)
-            .setWaitForCompletion(false)
-            .setIndices(TEST_INDEX)
-            .setRenamePattern(TEST_INDEX)
-            .setRenameReplacement(restoredIndexName)
-            .get();
-        assertEquals(restoreSnapshotResponse.status(), RestStatus.ACCEPTED);
-        return restoreSnapshotResponse;
+    public static RestoreSnapshotResponse restoreSnapshot(String snapshotRepoName, String snapshotName, String restoredIndexName) throws Exception {
+        AtomicReference<RestoreSnapshotResponse> responseRef = new AtomicReference<>();
+        assertBusy(() -> {
+            RestoreSnapshotResponse response = client()
+                .admin()
+                .cluster()
+                .prepareRestoreSnapshot(snapshotRepoName, snapshotName)
+                .setIndices(TEST_INDEX)
+                .setRenamePattern(TEST_INDEX)
+                .setRenameReplacement(restoredIndexName)
+                .setWaitForCompletion(true)
+                .execute()
+                .actionGet();
+
+            assertTrue(response.getRestoreInfo().totalShards() > 0);
+            assertEquals(0, response.getRestoreInfo().failedShards());
+
+            responseRef.set(response);
+        }, 1, TimeUnit.MINUTES);
+
+        return responseRef.get();
     }
 
     // verify that the created index is not remote store backed

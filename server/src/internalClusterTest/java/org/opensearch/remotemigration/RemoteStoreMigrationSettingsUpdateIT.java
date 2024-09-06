@@ -8,16 +8,22 @@
 
 package org.opensearch.remotemigration;
 
+import org.opensearch.action.admin.cluster.snapshots.create.CreateSnapshotResponse;
+import org.opensearch.action.admin.cluster.snapshots.status.SnapshotStatus;
 import org.opensearch.client.Client;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsException;
+import org.opensearch.snapshots.SnapshotInfo;
+import org.opensearch.snapshots.SnapshotState;
 import org.opensearch.test.InternalTestCluster;
 import org.opensearch.test.OpenSearchIntegTestCase;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 
+import static org.hamcrest.Matchers.is;
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.CompatibilityMode.MIXED;
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.CompatibilityMode.STRICT;
 import static org.opensearch.node.remotestore.RemoteStoreNodeService.Direction.REMOTE_STORE;
@@ -73,9 +79,9 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
 
         logger.info("Add remote and non-remote nodes");
         setClusterMode(MIXED.mode);
-        addRemote = false;
+        setAddRemote(false);
         String nonRemoteNodeName = internalCluster().startNode();
-        addRemote = true;
+        setAddRemote(true);
         String remoteNodeName = internalCluster().startNode();
         internalCluster().validateClusterFormed();
         assertNodeInCluster(nonRemoteNodeName);
@@ -84,7 +90,7 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
         logger.info("Create a non remote-backed index");
         createIndex(TEST_INDEX, 0);
 
-        logger.info("Verify that non remote stored backed index is created");
+        logger.info("Verify that non remote store backed index is created");
         assertNonRemoteStoreBackedIndex(TEST_INDEX);
 
         logger.info("Create repository");
@@ -94,8 +100,7 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
         createRepository(snapshotRepoName, "fs", Settings.builder().put("location", snapshotRepoNameAbsolutePath));
 
         logger.info("Create snapshot of non remote stored backed index");
-
-        createSnapshot(snapshotRepoName, snapshotName, TEST_INDEX);
+        createSnapshot(snapshotRepoName, snapshotName);
 
         logger.info("Restore index from snapshot under NONE direction");
         String restoredIndexName1 = TEST_INDEX + "-restored1";
@@ -164,7 +169,7 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
 
     // bootstrap a cluster
     private void initializeCluster(boolean remoteClusterManager) {
-        addRemote = remoteClusterManager;
+        setAddRemote(remoteClusterManager);
         internalCluster().startClusterManagerOnlyNode();
         client = internalCluster().client();
     }

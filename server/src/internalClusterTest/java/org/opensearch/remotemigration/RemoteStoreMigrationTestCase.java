@@ -125,8 +125,7 @@ public class RemoteStoreMigrationTestCase extends MigrationBaseTestCase {
         final String snapshot1 = "snapshot1";
         SnapshotInfo snapshotInfo1 = RemoteStoreMigrationShardAllocationBaseTestCase.createSnapshot(
             shallowSnapshotRepoName,
-            snapshot1,
-            "test"
+            snapshot1
         );
         assertEquals(snapshotInfo1.isRemoteStoreIndexShallowCopyEnabled(), true);
 
