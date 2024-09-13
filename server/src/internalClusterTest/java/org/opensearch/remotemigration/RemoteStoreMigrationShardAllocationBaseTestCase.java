@@ -24,7 +24,6 @@ import org.opensearch.cluster.routing.allocation.NodeAllocationResult;
 import org.opensearch.cluster.routing.allocation.decider.Decision;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.core.rest.RestStatus;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.snapshots.SnapshotInfo;
@@ -33,7 +32,11 @@ import org.opensearch.snapshots.SnapshotState;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.hamcrest.Matchers.is;
 import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY;
 import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_STORE_ENABLED;
 import static org.opensearch.cluster.metadata.IndexMetadata.SETTING_REMOTE_TRANSLOG_STORE_REPOSITORY;
@@ -276,20 +279,26 @@ public class RemoteStoreMigrationShardAllocationBaseTestCase extends MigrationBa
     }
 
     // create a snapshot
-    public static SnapshotInfo createSnapshot(String snapshotRepoName, String snapshotName, String... indices) {
-        SnapshotInfo snapshotInfo = internalCluster().client()
-            .admin()
-            .cluster()
-            .prepareCreateSnapshot(snapshotRepoName, snapshotName)
-            .setIndices(indices)
-            .setWaitForCompletion(true)
-            .get()
-            .getSnapshotInfo();
+    public static SnapshotInfo createSnapshot(String snapshotRepoName, String snapshotName, String... indices) throws Exception {
+        AtomicReference<SnapshotInfo> snapshotInfo = new AtomicReference<>();
+        assertBusy(() -> {
+            SnapshotInfo currentSnapshotInfo = internalCluster().client()
+                .admin()
+                .cluster()
+                .prepareCreateSnapshot(snapshotRepoName, snapshotName)
+                .setIndices(indices)
+                .setWaitForCompletion(true)
+                .execute()
+                .actionGet()
+                .getSnapshotInfo();
+            assertEquals(SnapshotState.SUCCESS, currentSnapshotInfo.state());
+            assertTrue(currentSnapshotInfo.totalShards() > 0);
+            assertEquals(currentSnapshotInfo.successfulShards(), currentSnapshotInfo.totalShards());
+            assertEquals(0, currentSnapshotInfo.failedShards());
 
-        assertEquals(SnapshotState.SUCCESS, snapshotInfo.state());
-        assertTrue(snapshotInfo.successfulShards() > 0);
-        assertEquals(0, snapshotInfo.failedShards());
-        return snapshotInfo;
+            snapshotInfo.set(currentSnapshotInfo);
+        }, 1, TimeUnit.MINUTES);
+        return snapshotInfo.get();
     }
 
     // create new index
@@ -310,18 +319,29 @@ public class RemoteStoreMigrationShardAllocationBaseTestCase extends MigrationBa
     }
 
     // restore indices from a snapshot
-    public static RestoreSnapshotResponse restoreSnapshot(String snapshotRepoName, String snapshotName, String restoredIndexName) {
-        RestoreSnapshotResponse restoreSnapshotResponse = internalCluster().client()
-            .admin()
-            .cluster()
-            .prepareRestoreSnapshot(snapshotRepoName, snapshotName)
-            .setWaitForCompletion(false)
-            .setIndices(TEST_INDEX)
-            .setRenamePattern(TEST_INDEX)
-            .setRenameReplacement(restoredIndexName)
-            .get();
-        assertEquals(restoreSnapshotResponse.status(), RestStatus.ACCEPTED);
-        return restoreSnapshotResponse;
+    public static String restoreIndexFromSnapshot(String snapshotRepoName, String snapshotName, String restoredIndexName) throws Exception {
+        AtomicReference<String> finalRestoredIndexName = new AtomicReference<>(restoredIndexName);
+        AtomicInteger attempt = new AtomicInteger();
+        assertBusy(() -> {
+            attempt.getAndIncrement();
+            String currentRestoredIndexName = restoredIndexName + "-" + attempt.get();
+            RestoreSnapshotResponse response = internalCluster().client()
+                .admin()
+                .cluster()
+                .prepareRestoreSnapshot(snapshotRepoName, snapshotName)
+                .setWaitForCompletion(true)
+                .setIndices(TEST_INDEX)
+                .setRenamePattern(TEST_INDEX)
+                .setRenameReplacement(currentRestoredIndexName)
+                .execute()
+                .actionGet();
+
+            assertTrue(response.getRestoreInfo().totalShards() > 0);
+            assertEquals(0, response.getRestoreInfo().failedShards());
+            System.out.println("*** restored index " + currentRestoredIndexName + ": " + internalCluster().client().admin().indices().prepareGetIndex().addIndices(currentRestoredIndexName).execute().actionGet());
+            finalRestoredIndexName.set(currentRestoredIndexName);
+        }, 1, TimeUnit.MINUTES);
+        return finalRestoredIndexName.get();
     }
 
     // verify that the created index is not remote store backed

@@ -68,7 +68,6 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
         assertRemoteStoreBackedIndex(indexName2);
     }
 
-    @AwaitsFix(bugUrl = "https://github.com/opensearch-project/OpenSearch/issues/15793")
     public void testNewRestoredIndexIsRemoteStoreBackedForRemoteStoreDirectionAndMixedMode() throws Exception {
         logger.info("Initialize cluster: gives non remote cluster manager");
         initializeCluster(false);
@@ -100,17 +99,15 @@ public class RemoteStoreMigrationSettingsUpdateIT extends RemoteStoreMigrationSh
         createSnapshot(snapshotRepoName, snapshotName, TEST_INDEX);
 
         logger.info("Restore index from snapshot under NONE direction");
-        String restoredIndexName1 = TEST_INDEX + "-restored1";
-        restoreSnapshot(snapshotRepoName, snapshotName, restoredIndexName1);
-        ensureGreen(restoredIndexName1);
+        String restoredIndexName1 = restoreIndexFromSnapshot(snapshotRepoName, snapshotName, TEST_INDEX + "-restored1");
+        ensureGreen(TimeValue.timeValueSeconds(90), restoredIndexName1);
 
         logger.info("Verify that restored index is non remote-backed");
         assertNonRemoteStoreBackedIndex(restoredIndexName1);
 
         logger.info("Restore index from snapshot under REMOTE_STORE direction");
         setDirection(REMOTE_STORE.direction);
-        String restoredIndexName2 = TEST_INDEX + "-restored2";
-        restoreSnapshot(snapshotRepoName, snapshotName, restoredIndexName2);
+        String restoredIndexName2 = restoreIndexFromSnapshot(snapshotRepoName, snapshotName, TEST_INDEX + "-restored2");
         ensureGreen(TimeValue.timeValueSeconds(90), restoredIndexName2);
 
         logger.info("Verify that restored index is non remote-backed");
